@@ -49,3 +49,9 @@ Thumbs.db
 # JVM crash logs
 hs_err_pid*
 replay_pid*
+
+# Spring Tool Suite
+.apt_generated
+.factorypath
+.springBeans
+.sts4-cache/
