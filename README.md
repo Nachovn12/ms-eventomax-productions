@@ -112,19 +112,34 @@ y `ddl-auto=validate`. H2 es una dependencia exclusiva de tests. Esta prueba ver
 el arranque y la validación del esquema actual; no sustituye pruebas del slice EP1
 ni la validación contra PostgreSQL/RDS.
 
-### Checkpoint pendiente de EMX-49
+### EMX-49 – Persistencia mínima de Production
 
-EMX-39 define la representación mínima: `id`, `organizerId`, `name`, `scheduledAt`,
-`location`, `status`, `createdAt`, `updatedAt`. El request contiene únicamente
-`name`, `scheduledAt` y `location`; la identidad determina `organizerId` cuando
-corresponda y el backend establece `SOLICITADO` como estado inicial.
+EMX-49 deja alineada la persistencia mínima de `Production` con el contrato EP1
+aprobado en EMX-39:
 
-La entidad y V1 aún reflejan el modelo preliminar. Antes de alinearlas, consultar
-`flyway_schema_history` en la base compartida `eventomax_productions` y registrar
-el resultado. Si V1 ya fue aplicada, conservarla y crear V2; si no fue aplicada,
-corregir V1. La falta de conexión o de evidencia no demuestra que V1 esté sin aplicar.
-EMX-50 (API) y EMX-51 (pruebas del slice y Docker) siguen pendientes.
+- `id`
+- `organizerId`
+- `name`
+- `scheduledAt`
+- `location`
+- `status`
+- `createdAt`
+- `updatedAt`
 
+El request de creación contempla únicamente `name`, `scheduledAt` y `location`.
+La identidad autenticada determinará `organizerId` cuando se implemente la capa API,
+y el backend establece `SOLICITADO` como estado inicial.
+
+La migración `V1__create_productions_table.sql` fue corregida directamente antes de
+su primera aplicación en el entorno compartido. La verificación realizada sobre
+Amazon RDS confirmó que no existían ni `flyway_schema_history` ni la tabla
+`public.productions`, por lo que no correspondía crear una migración V2.
+
+La entidad JPA, el repositorio Spring Data JPA, Flyway y la configuración de
+persistencia quedan completados para el alcance de EMX-49.
+
+EMX-50 (API REST mínima) y EMX-51 (pruebas del slice y Docker) continúan pendientes
+y se implementarán en sus historias correspondientes.
 ## Proyecto académico
 
 **Asignatura:** DSY1107 – Desarrollo Cloud Native I  
