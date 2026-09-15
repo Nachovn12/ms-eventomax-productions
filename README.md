@@ -5,7 +5,7 @@ Microservicio de dominio de **EventoMax** responsable de la gestión de eventos,
 ## Tecnologías
 
 - Java 25 LTS
-- Spring Boot
+- Spring Boot 4.1.1 GA
 - Spring Data JPA
 - Hibernate
 - Flyway
@@ -91,8 +91,55 @@ Flujo de integración:
 
 ## Ejecución local
 
-Las instrucciones de compilación y ejecución se completarán cuando se inicialice el proyecto Spring Boot.
+Requisitos: JDK 25 y acceso a PostgreSQL para ejecutar la aplicación.
+La configuración principal está en `src/main/resources/application.yml` y requiere
+`DB_URL` (URL JDBC de PostgreSQL), `DB_USER` y `DB_PASSWORD` como variables de entorno,
+sin valores de respaldo. No guardar credenciales en archivos versionados.
 
+Compilar y verificar en Windows:
+
+```powershell
+.\mvnw.cmd clean verify
+.\mvnw.cmd clean package
+```
+
+En Linux/macOS, usar `./mvnw` en lugar de `.\mvnw.cmd`.
+El JAR ejecutable se genera en `target/ms-eventomax-productions-0.0.1-SNAPSHOT.jar`.
+
+El test de arranque activa el perfil `test`, configurado únicamente en
+`src/test/resources/application-test.yml`: H2 en modo PostgreSQL, Flyway habilitado
+y `ddl-auto=validate`. H2 es una dependencia exclusiva de tests. Esta prueba verifica
+el arranque y la validación del esquema actual; no sustituye pruebas del slice EP1
+ni la validación contra PostgreSQL/RDS.
+
+### EMX-49 – Persistencia mínima de Production
+
+EMX-49 deja alineada la persistencia mínima de `Production` con el contrato EP1
+aprobado en EMX-39:
+
+- `id`
+- `organizerId`
+- `name`
+- `scheduledAt`
+- `location`
+- `status`
+- `createdAt`
+- `updatedAt`
+
+El request de creación contempla únicamente `name`, `scheduledAt` y `location`.
+La identidad autenticada determinará `organizerId` cuando se implemente la capa API,
+y el backend establece `SOLICITADO` como estado inicial.
+
+La migración `V1__create_productions_table.sql` fue corregida directamente antes de
+su primera aplicación en el entorno compartido. La verificación realizada sobre
+Amazon RDS confirmó que no existían ni `flyway_schema_history` ni la tabla
+`public.productions`, por lo que no correspondía crear una migración V2.
+
+La entidad JPA, el repositorio Spring Data JPA, Flyway y la configuración de
+persistencia quedan completados para el alcance de EMX-49.
+
+EMX-50 (API REST mínima) y EMX-51 (pruebas del slice y Docker) continúan pendientes
+y se implementarán en sus historias correspondientes.
 ## Proyecto académico
 
 **Asignatura:** DSY1107 – Desarrollo Cloud Native I  
