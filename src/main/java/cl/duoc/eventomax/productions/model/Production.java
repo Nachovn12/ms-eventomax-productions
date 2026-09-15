@@ -1,6 +1,15 @@
 package cl.duoc.eventomax.productions.model;
 
-import jakarta.persistence.*;
+import jakarta.persistence.Column;
+import jakarta.persistence.Entity;
+import jakarta.persistence.EnumType;
+import jakarta.persistence.Enumerated;
+import jakarta.persistence.GeneratedValue;
+import jakarta.persistence.GenerationType;
+import jakarta.persistence.Id;
+import jakarta.persistence.PrePersist;
+import jakarta.persistence.PreUpdate;
+import jakarta.persistence.Table;
 import java.time.LocalDateTime;
 
 @Entity
@@ -11,47 +20,71 @@ public class Production {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
+    @Column(name = "organizer_id", nullable = false, length = 255)
+    private String organizerId;
+
     @Column(nullable = false, length = 150)
-    private String nombre;
+    private String name;
 
-    @Column(columnDefinition = "TEXT")
-    private String descripcion;
+    @Column(name = "scheduled_at", nullable = false)
+    private LocalDateTime scheduledAt;
 
-    @Column(name = "fecha_inicio", nullable = false)
-    private LocalDateTime fechaInicio;
+    @Column(nullable = false, length = 255)
+    private String location;
 
-    @Column(name = "fecha_fin")
-    private LocalDateTime fechaFin;
-
+    @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 30)
-    private String estado;
+    private ProductionStatus status = ProductionStatus.SOLICITADO;
 
-    public Production() {}
+    @Column(name = "created_at", nullable = false)
+    private LocalDateTime createdAt;
 
-    public Production(Long id, String nombre, String descripcion, LocalDateTime fechaInicio, LocalDateTime fechaFin, String estado) {
-        this.id = id;
-        this.nombre = nombre;
-        this.descripcion = descripcion;
-        this.fechaInicio = fechaInicio;
-        this.fechaFin = fechaFin;
-        this.estado = estado;
+    @Column(name = "updated_at", nullable = false)
+    private LocalDateTime updatedAt;
+
+    public Production() {
+    }
+
+    public Production(String organizerId, String name, LocalDateTime scheduledAt, String location) {
+        this.organizerId = organizerId;
+        this.name = name;
+        this.scheduledAt = scheduledAt;
+        this.location = location;
+    }
+
+    @PrePersist
+    void onCreate() {
+        LocalDateTime now = LocalDateTime.now();
+        if (status == null) {
+            status = ProductionStatus.SOLICITADO;
+        }
+        if (createdAt == null) {
+            createdAt = now;
+        }
+        if (updatedAt == null) {
+            updatedAt = now;
+        }
+    }
+
+    @PreUpdate
+    void onUpdate() {
+        updatedAt = LocalDateTime.now();
     }
 
     public Long getId() { return id; }
     public void setId(Long id) { this.id = id; }
-
-    public String getNombre() { return nombre; }
-    public void setNombre(String nombre) { this.nombre = nombre; }
-
-    public String getDescripcion() { return descripcion; }
-    public void setDescripcion(String descripcion) { this.descripcion = descripcion; }
-
-    public LocalDateTime getFechaInicio() { return fechaInicio; }
-    public void setFechaInicio(LocalDateTime fechaInicio) { this.fechaInicio = fechaInicio; }
-
-    public LocalDateTime getFechaFin() { return fechaFin; }
-    public void setFechaFin(LocalDateTime fechaFin) { this.fechaFin = fechaFin; }
-
-    public String getEstado() { return estado; }
-    public void setEstado(String estado) { this.estado = estado; }
+    public String getOrganizerId() { return organizerId; }
+    public void setOrganizerId(String organizerId) { this.organizerId = organizerId; }
+    public String getName() { return name; }
+    public void setName(String name) { this.name = name; }
+    public LocalDateTime getScheduledAt() { return scheduledAt; }
+    public void setScheduledAt(LocalDateTime scheduledAt) { this.scheduledAt = scheduledAt; }
+    public String getLocation() { return location; }
+    public void setLocation(String location) { this.location = location; }
+    public ProductionStatus getStatus() { return status; }
+    public void setStatus(ProductionStatus status) { this.status = status; }
+    public LocalDateTime getCreatedAt() { return createdAt; }
+    public void setCreatedAt(LocalDateTime createdAt) { this.createdAt = createdAt; }
+    public LocalDateTime getUpdatedAt() { return updatedAt; }
+    public void setUpdatedAt(LocalDateTime updatedAt) { this.updatedAt = updatedAt; }
 }
