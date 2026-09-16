@@ -2,6 +2,7 @@ package cl.duoc.eventomax.productions.controller;
 
 import cl.duoc.eventomax.productions.dto.ProductionRequestDTO;
 import cl.duoc.eventomax.productions.dto.ProductionResponseDTO;
+import cl.duoc.eventomax.productions.dto.ProductionStatusUpdateDTO;
 import cl.duoc.eventomax.productions.service.ProductionService;
 
 import jakarta.validation.Valid;
@@ -50,6 +51,17 @@ public class ProductionController {
         return service.getProductionById(id)
                 .map(ResponseEntity::ok)
                 .orElseGet(() -> ResponseEntity.notFound().build());
+
+    }
+
+
+    @PatchMapping("/{id}/status")
+    public ResponseEntity<ProductionResponseDTO> updateStatus(
+            @PathVariable Long id,
+            @Valid @RequestBody ProductionStatusUpdateDTO request) {
+
+        ProductionResponseDTO updated = service.updateStatus(id, request);
+        return ResponseEntity.ok(updated);
 
     }
 }

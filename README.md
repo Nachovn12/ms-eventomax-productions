@@ -92,9 +92,11 @@ Flujo de integración:
 ## Ejecución local
 
 Requisitos: JDK 25 y acceso a PostgreSQL para ejecutar la aplicación.
-La configuración principal está en `src/main/resources/application.yml` y requiere
-`DB_URL` (URL JDBC de PostgreSQL), `DB_USER` y `DB_PASSWORD` como variables de entorno,
-sin valores de respaldo. No guardar credenciales en archivos versionados.
+La configuración principal está en `src/main/resources/application.yml`.
+Las variables de entorno requeridas son `DB_URL`, `DB_USER` y `DB_PASSWORD`.
+En desarrollo local se usan valores de respaldo definidos en `application.yml`.
+En producción deben inyectarse externamente (sin valores de respaldo).
+No guardar credenciales reales en archivos versionados.
 
 Compilar y verificar en Windows:
 
@@ -108,9 +110,7 @@ El JAR ejecutable se genera en `target/ms-eventomax-productions-0.0.1-SNAPSHOT.j
 
 El test de arranque activa el perfil `test`, configurado únicamente en
 `src/test/resources/application-test.yml`: H2 en modo PostgreSQL, Flyway habilitado
-y `ddl-auto=validate`. H2 es una dependencia exclusiva de tests. Esta prueba verifica
-el arranque y la validación del esquema actual; no sustituye pruebas del slice EP1
-ni la validación contra PostgreSQL/RDS.
+y `ddl-auto=validate`. H2 es una dependencia exclusiva de tests.
 
 ### EMX-49 – Persistencia mínima de Production
 
@@ -126,20 +126,59 @@ aprobado en EMX-39:
 - `createdAt`
 - `updatedAt`
 
-El request de creación contempla únicamente `name`, `scheduledAt` y `location`.
-La identidad autenticada determinará `organizerId` cuando se implemente la capa API,
-y el backend establece `SOLICITADO` como estado inicial.
+El request de creación acepta `organizerId`, `name`, `scheduledAt` y `location`.
+El backend establece `SOLICITADO` como estado inicial.
+`organizerId` pasará a derivarse del JWT cuando se integre la capa de seguridad.
 
 La migración `V1__create_productions_table.sql` fue corregida directamente antes de
 su primera aplicación en el entorno compartido. La verificación realizada sobre
 Amazon RDS confirmó que no existían ni `flyway_schema_history` ni la tabla
 `public.productions`, por lo que no correspondía crear una migración V2.
 
-La entidad JPA, el repositorio Spring Data JPA, Flyway y la configuración de
-persistencia quedan completados para el alcance de EMX-49.
+### EMX-50 – API REST mínima (completado)
 
-EMX-50 (API REST mínima) y EMX-51 (pruebas del slice y Docker) continúan pendientes
-y se implementarán en sus historias correspondientes.
+EMX-50 implementa la API REST completa sobre el dominio `Production`:
+
+**Endpoints disponibles:**
+
+| Método | Ruta | Descripción |
+|--------|------|-------------|
+| `POST` | `/api/productions` | Crear producción (estado inicial: `SOLICITADO`) |
+| `GET` | `/api/productions` | Listar todas las producciones |
+| `GET` | `/api/productions/{id}` | Obtener producción por ID |
+| `PATCH` | `/api/productions/{id}/status` | Actualizar estado con validación de transición |
+
+**Reglas de transición implementadas:**
+
+```
+SOLICITADO  → CONFIRMADO | CANCELADO
+CONFIRMADO  → EN_MONTAJE | CANCELADO
+EN_MONTAJE  → EN_EJECUCION | CANCELADO
+EN_EJECUCION → CERRADO | CANCELADO
+CERRADO     → (terminal)
+CANCELADO   → (terminal)
+```
+
+**Manejo de errores uniforme:**
+
+| HTTP | Situación |
+|------|-----------|
+| `400` | Validación de campos del request |
+| `404` | Producción no encontrada |
+| `422` | Transición de estado inválida |
+
+**Documentación:** disponible en `/swagger-ui/index.html` y `/v3/api-docs`.
+
+### EMX-51 – Pruebas del slice (completado en rama EMX-50)
+
+Tests implementados y pasando (`mvn test`):
+
+- `MsEventomaxProductionsApplicationTests` – arranque del contexto
+- `ProductionPersistenceTest` – esquema Flyway + persistencia JPA (2 tests)
+- `ProductionControllerTest` – slice `@WebMvcTest` con MockMvc (6 tests)
+
+Total: **9 tests, 0 fallos**.
+
 ## Proyecto académico
 
 **Asignatura:** DSY1107 – Desarrollo Cloud Native I  
