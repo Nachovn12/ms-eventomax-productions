@@ -3,10 +3,14 @@ package cl.duoc.eventomax.productions.controller;
 import cl.duoc.eventomax.productions.dto.ProductionRequestDTO;
 import cl.duoc.eventomax.productions.dto.ProductionResponseDTO;
 import cl.duoc.eventomax.productions.service.ProductionService;
+
 import jakarta.validation.Valid;
+
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+
+import java.util.List;
 
 @RestController
 @RequestMapping("/api/productions")
@@ -17,6 +21,7 @@ public class ProductionController {
     public ProductionController(ProductionService service) {
         this.service = service;
     }
+
 
     @PostMapping
     public ResponseEntity<ProductionResponseDTO> create(
@@ -29,6 +34,15 @@ public class ProductionController {
                 .body(response);
     }
 
+
+    @GetMapping
+    public ResponseEntity<List<ProductionResponseDTO>> getAll() {
+
+        return ResponseEntity.ok(service.getAllProductions());
+
+    }
+
+
     @GetMapping("/{id}")
     public ResponseEntity<ProductionResponseDTO> getById(
             @PathVariable Long id) {
@@ -36,5 +50,6 @@ public class ProductionController {
         return service.getProductionById(id)
                 .map(ResponseEntity::ok)
                 .orElseGet(() -> ResponseEntity.notFound().build());
+
     }
 }

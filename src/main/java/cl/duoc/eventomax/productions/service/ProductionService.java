@@ -9,6 +9,7 @@ import cl.duoc.eventomax.productions.repository.ProductionRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.List;
 import java.util.Optional;
 
 @Service
@@ -34,7 +35,7 @@ public class ProductionService {
 
         Production saved = repository.save(production);
 
-        return toResponse(saved);
+        return toResponseDTO(saved);
     }
 
 
@@ -42,11 +43,23 @@ public class ProductionService {
     public Optional<ProductionResponseDTO> getProductionById(Long id) {
 
         return repository.findById(id)
-                .map(this::toResponse);
+                .map(this::toResponseDTO);
+
     }
 
 
-    private ProductionResponseDTO toResponse(Production production) {
+    @Transactional(readOnly = true)
+    public List<ProductionResponseDTO> getAllProductions() {
+
+        return repository.findAll()
+                .stream()
+                .map(this::toResponseDTO)
+                .toList();
+
+    }
+
+
+    private ProductionResponseDTO toResponseDTO(Production production) {
 
         return new ProductionResponseDTO(
                 production.getId(),
