@@ -144,9 +144,9 @@ EMX-50 implementa la API REST completa sobre el dominio `Production`:
 | Método | Ruta | Descripción |
 |--------|------|-------------|
 | `POST` | `/api/productions` | Crear producción (estado inicial: `SOLICITADO`) |
-| `GET` | `/api/productions` | Listar todas las producciones |
+| `GET` | `/api/productions` | Listar producciones (soporta filtros: `status`, `from`, `to`) |
 | `GET` | `/api/productions/{id}` | Obtener producción por ID |
-| `PATCH` | `/api/productions/{id}/status` | Actualizar estado con validación de transición |
+| `PUT` | `/api/productions/{id}/status` | Actualizar estado con validación de transición |
 
 **Reglas de transición implementadas:**
 
@@ -163,6 +163,7 @@ CANCELADO   → (terminal)
 
 | HTTP | Situación |
 |------|-----------|
+| `201` | Creación exitosa |
 | `400` | Validación de campos del request |
 | `404` | Producción no encontrada |
 | `422` | Transición de estado inválida |
@@ -175,9 +176,75 @@ Tests implementados y pasando (`mvn test`):
 
 - `MsEventomaxProductionsApplicationTests` – arranque del contexto
 - `ProductionPersistenceTest` – esquema Flyway + persistencia JPA (2 tests)
-- `ProductionControllerTest` – slice `@WebMvcTest` con MockMvc (6 tests)
+- `ProductionControllerTest` – slice `@WebMvcTest` con MockMvc (13 tests)
 
-Total: **9 tests, 0 fallos**.
+Total: **16 tests, 0 fallos**.
+
+## Ejecución local con Docker
+
+### Requisitos previos
+
+- Docker y Docker Compose instalados.
+
+### Pasos
+
+1. Copiar la plantilla de variables de entorno y completar los valores:
+
+```bash
+cp .env.example .env
+```
+
+Ejemplo de `.env` para desarrollo local:
+
+```
+POSTGRES_DB=eventomax_productions
+POSTGRES_USER=eventomax
+POSTGRES_PASSWORD=eventomax_dev
+
+DB_URL=jdbc:postgresql://postgres:5432/eventomax_productions
+DB_USER=eventomax
+DB_PASSWORD=eventomax_dev
+```
+
+2. Construir y levantar los servicios:
+
+```bash
+docker compose up --build -d
+```
+
+3. Validar health check:
+
+```
+GET http://localhost:8080/actuator/health
+```
+
+Respuesta esperada:
+
+```json
+{ "status": "UP" }
+```
+
+4. Validar API:
+
+```
+GET http://localhost:8080/api/productions
+```
+
+5. Detener los servicios:
+
+```bash
+docker compose down
+```
+
+## Preparación AWS
+
+El microservicio está preparado para despliegue en la arquitectura EventoMax sobre AWS:
+
+- **Cómputo:** la imagen Docker se desplegará en **Amazon EC2**.
+- **Base de datos:** PostgreSQL productivo será provisto por **Amazon RDS for PostgreSQL**.
+- **Configuración:** las variables `DB_URL`, `DB_USER` y `DB_PASSWORD` serán inyectadas mediante **variables de entorno** o **AWS Secrets Manager** en la instancia EC2.
+- **Seguridad:** no se subirán archivos `.env` reales al repositorio. Las credenciales productivas se gestionan exclusivamente en la infraestructura AWS.
+- **Health check:** el endpoint `/actuator/health` está disponible para monitoreo del **Application Load Balancer** y Docker HEALTHCHECK.
 
 ## Proyecto académico
 
