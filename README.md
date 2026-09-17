@@ -168,7 +168,10 @@ CANCELADO   → (terminal)
 | `404` | Producción no encontrada |
 | `422` | Transición de estado inválida |
 
-**Documentación:** disponible en `/swagger-ui/index.html` y `/v3/api-docs`.
+**Documentación Interactiva:**
+
+- **Swagger UI:** [http://localhost:8080/swagger-ui/index.html](http://localhost:8080/swagger-ui/index.html)
+- **OpenAPI JSON:** [http://localhost:8080/v3/api-docs](http://localhost:8080/v3/api-docs)
 
 ### EMX-51 – Pruebas del slice (completado en rama EMX-50)
 
@@ -180,36 +183,39 @@ Tests implementados y pasando (`mvn test`):
 
 Total: **16 tests, 0 fallos**.
 
-## Ejecución local con Docker
+## Ejecución
 
-### Requisitos previos
+El proyecto está preparado para ejecutarse de dos maneras en entornos locales:
 
-- Docker y Docker Compose instalados.
+### Opción 1: Docker Compose (Recomendado)
 
-### Pasos
+Levanta la base de datos PostgreSQL y la aplicación de Spring Boot en contenedores enlazados.
 
-1. Copiar la plantilla de variables de entorno y completar los valores:
+1. Copiar la plantilla de variables de entorno y completarla si se requiere (por defecto los puertos internos están listos):
 
 ```bash
 cp .env.example .env
-```
-
-Ejemplo de `.env` para desarrollo local:
-
-```
-POSTGRES_DB=eventomax_productions
-POSTGRES_USER=eventomax
-POSTGRES_PASSWORD=eventomax_dev
-
-DB_URL=jdbc:postgresql://postgres:5432/eventomax_productions
-DB_USER=eventomax
-DB_PASSWORD=eventomax_dev
 ```
 
 2. Construir y levantar los servicios:
 
 ```bash
 docker compose up --build -d
+```
+
+### Opción 2: Ejecución Nativa (Perfil Local)
+
+Permite ejecutar la aplicación directamente en la máquina host, conectándose a la base de datos de Docker expuesta en localhost. Ideal para debug con IDEs.
+
+1. Levantar solo la base de datos:
+```bash
+docker compose up postgres -d
+```
+
+2. Compilar y ejecutar usando el perfil `local` (que preconfigura el host y credenciales PostgreSQL):
+```bash
+mvn clean package -DskipTests
+java -jar target/ms-eventomax-productions-0.0.1-SNAPSHOT.jar --spring.profiles.active=local
 ```
 
 3. Validar health check:
