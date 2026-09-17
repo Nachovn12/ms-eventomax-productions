@@ -7,10 +7,12 @@ import cl.duoc.eventomax.productions.service.ProductionService;
 
 import jakarta.validation.Valid;
 
+import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.time.LocalDateTime;
 import java.util.List;
 
 @RestController
@@ -37,9 +39,18 @@ public class ProductionController {
 
 
     @GetMapping
-    public ResponseEntity<List<ProductionResponseDTO>> getAll() {
+    public ResponseEntity<List<ProductionResponseDTO>> getAll(
+            @RequestParam(required = false) String status,
+            @RequestParam(required = false)
+            @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime from,
+            @RequestParam(required = false)
+            @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime to) {
 
-        return ResponseEntity.ok(service.getAllProductions());
+        if (status == null && from == null && to == null) {
+            return ResponseEntity.ok(service.getAllProductions());
+        }
+
+        return ResponseEntity.ok(service.getFilteredProductions(status, from, to));
 
     }
 
@@ -55,7 +66,7 @@ public class ProductionController {
     }
 
 
-    @PatchMapping("/{id}/status")
+    @PutMapping("/{id}/status")
     public ResponseEntity<ProductionResponseDTO> updateStatus(
             @PathVariable Long id,
             @Valid @RequestBody ProductionStatusUpdateDTO request) {

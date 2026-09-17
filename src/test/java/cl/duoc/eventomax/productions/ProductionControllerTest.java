@@ -121,7 +121,7 @@ class ProductionControllerTest {
     }
 
     // ------------------------------------------------------------------
-    // Test 5 – PATCH transición válida → 200
+    // Test 5 – PUT transición válida → 200
     // ------------------------------------------------------------------
 
     @Test
@@ -138,7 +138,7 @@ class ProductionControllerTest {
         String body = objectMapper.writeValueAsString(
                 new ProductionStatusUpdateDTO(ProductionStatus.CONFIRMADO));
 
-        mockMvc.perform(patch("/api/productions/1/status")
+        mockMvc.perform(put("/api/productions/1/status")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body))
                 .andExpect(status().isOk())
@@ -146,7 +146,7 @@ class ProductionControllerTest {
     }
 
     // ------------------------------------------------------------------
-    // Test 6 – PATCH transición inválida → 422
+    // Test 6 – PUT transición inválida → 422
     // ------------------------------------------------------------------
 
     @Test
@@ -160,12 +160,181 @@ class ProductionControllerTest {
         String body = objectMapper.writeValueAsString(
                 new ProductionStatusUpdateDTO(ProductionStatus.EN_MONTAJE));
 
-        mockMvc.perform(patch("/api/productions/1/status")
+        mockMvc.perform(put("/api/productions/1/status")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body))
                 .andExpect(status().isUnprocessableEntity())
                 .andExpect(jsonPath("$.status").value(422))
                 .andExpect(jsonPath("$.error").value("Unprocessable Entity"))
+                .andExpect(jsonPath("$.message").isString());
+    }
+
+    // ------------------------------------------------------------------
+    // Test 7 – GET /api/productions?status=CONFIRMADO → filtro por status
+    // ------------------------------------------------------------------
+
+    @Test
+    void getAll_withStatusFilter_returnsFilteredList() throws Exception {
+
+        LocalDateTime now = LocalDateTime.now();
+        ProductionResponseDTO confirmed = new ProductionResponseDTO(
+                2L, "organizer-xyz", "Concierto",
+                LocalDateTime.of(2026, 1, 15, 20, 0),
+                "Valparaíso", "CONFIRMADO", now, now
+        );
+        given(service.getFilteredProductions(eq("CONFIRMADO"), eq(null), eq(null)))
+                .willReturn(List.of(confirmed));
+
+        mockMvc.perform(get("/api/productions")
+                        .param("status", "CONFIRMADO"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$", hasSize(1)))
+                .andExpect(jsonPath("$[0].id").value(2))
+                .andExpect(jsonPath("$[0].status").value("CONFIRMADO"));
+    }
+
+    // ------------------------------------------------------------------
+    // Test 8 – GET /api/productions?status=CONFIRMADO&from=...&to=...
+    // ------------------------------------------------------------------
+
+    @Test
+    void getAll_withAllFilters_returnsFilteredList() throws Exception {
+
+        LocalDateTime now = LocalDateTime.now();
+        ProductionResponseDTO confirmed = new ProductionResponseDTO(
+                3L, "organizer-xyz", "Feria de arte",
+                LocalDateTime.of(2026, 1, 20, 10, 0),
+                "Concepción", "CONFIRMADO", now, now
+        );
+        given(service.getFilteredProductions(
+                eq("CONFIRMADO"),
+                eq(LocalDateTime.of(2026, 1, 1, 0, 0, 0)),
+                eq(LocalDateTime.of(2026, 1, 31, 23, 59, 59))))
+                .willReturn(List.of(confirmed));
+
+        mockMvc.perform(get("/api/productions")
+                        .param("status", "CONFIRMADO")
+                        .param("from", "2026-01-01T00:00:00")
+                        .param("to", "2026-01-31T23:59:59"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$", hasSize(1)))
+                .andExpect(jsonPath("$[0].id").value(3))
+                .andExpect(jsonPath("$[0].name").value("Feria de arte"))
+                .andExpect(jsonPath("$[0].status").value("CONFIRMADO"));
+    }
+
+    // ------------------------------------------------------------------
+    // Test 9 – GET /api/productions?from=...&to=... sin status
+    // ------------------------------------------------------------------
+
+    @Test
+    void getAll_withDateRangeOnly_returnsFilteredList() throws Exception {
+
+        LocalDateTime now = LocalDateTime.now();
+        ProductionResponseDTO sample = new ProductionResponseDTO(
+                4L, "organizer-abc", "Workshop",
+                LocalDateTime.of(2026, 1, 10, 9, 0),
+                "Santiago", "SOLICITADO", now, now
+        );
+        given(service.getFilteredProductions(
+                eq(null),
+                eq(LocalDateTime.of(2026, 1, 1, 0, 0, 0)),
+                eq(LocalDateTime.of(2026, 1, 31, 23, 59, 59))))
+                .willReturn(List.of(sample));
+
+        mockMvc.perform(get("/api/productions")
+                        .param("from", "2026-01-01T00:00:00")
+                        .param("to", "2026-01-31T23:59:59"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$", hasSize(1)))
+                .andExpect(jsonPath("$[0].id").value(4))
+                .andExpect(jsonPath("$[0].name").value("Workshop"));
+    }
+
+    // ------------------------------------------------------------------
+    // Test 10 – GET sin filtros sigue usando getAllProductions
+    // ------------------------------------------------------------------
+
+    @Test
+    void getAll_withoutFilters_delegatesToGetAllProductions() throws Exception {
+
+        given(service.getAllProductions()).willReturn(List.of(sampleResponse()));
+
+        mockMvc.perform(get("/api/productions"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$", hasSize(1)))
+                .andExpect(jsonPath("$[0].id").value(1));
+    }
+
+    // ------------------------------------------------------------------
+    // Test 11 – POST válido → 201
+    // ------------------------------------------------------------------
+
+    @Test
+    void create_validRequest_returns201() throws Exception {
+
+        LocalDateTime now = LocalDateTime.now();
+        ProductionResponseDTO created = new ProductionResponseDTO(
+                5L, "organizer-abc", "Lanzamiento producto",
+                LocalDateTime.of(2027, 3, 10, 19, 0),
+                "Santiago", "SOLICITADO", now, now
+        );
+        given(service.createProduction(any())).willReturn(created);
+
+        String body = objectMapper.writeValueAsString(
+                new java.util.LinkedHashMap<>() {{
+                    put("organizerId", "organizer-abc");
+                    put("name", "Lanzamiento producto");
+                    put("scheduledAt", "2027-03-10T19:00:00");
+                    put("location", "Santiago");
+                }});
+
+        mockMvc.perform(post("/api/productions")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.id").value(5))
+                .andExpect(jsonPath("$.name").value("Lanzamiento producto"))
+                .andExpect(jsonPath("$.status").value("SOLICITADO"));
+    }
+
+    // ------------------------------------------------------------------
+    // Test 12 – PUT con status null → 400
+    // ------------------------------------------------------------------
+
+    @Test
+    void updateStatus_nullStatus_returns400() throws Exception {
+
+        mockMvc.perform(put("/api/productions/1/status")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"status\": null}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.status").value(400))
+                .andExpect(jsonPath("$.error").value("Bad Request"));
+    }
+
+    // ------------------------------------------------------------------
+    // Test 13 – POST con nombre excediendo @Size → 400
+    // ------------------------------------------------------------------
+
+    @Test
+    void create_nameTooLong_returns400() throws Exception {
+
+        String longName = "A".repeat(151);
+        String body = objectMapper.writeValueAsString(
+                new java.util.LinkedHashMap<>() {{
+                    put("organizerId", "organizer-abc");
+                    put("name", longName);
+                    put("scheduledAt", "2027-03-10T19:00:00");
+                    put("location", "Santiago");
+                }});
+
+        mockMvc.perform(post("/api/productions")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.status").value(400))
+                .andExpect(jsonPath("$.error").value("Bad Request"))
                 .andExpect(jsonPath("$.message").isString());
     }
 }

@@ -15,6 +15,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.time.LocalDateTime;
 
 @Service
 public class ProductionService {
@@ -56,6 +57,23 @@ public class ProductionService {
     public List<ProductionResponseDTO> getAllProductions() {
 
         return repository.findAll()
+                .stream()
+                .map(this::toResponseDTO)
+                .toList();
+
+    }
+
+
+    @Transactional(readOnly = true)
+    public List<ProductionResponseDTO> getFilteredProductions(
+            String statusStr, LocalDateTime from, LocalDateTime to) {
+
+        ProductionStatus status = null;
+        if (statusStr != null && !statusStr.isBlank()) {
+            status = ProductionStatus.valueOf(statusStr);
+        }
+
+        return repository.findByFilters(status, from, to)
                 .stream()
                 .map(this::toResponseDTO)
                 .toList();
