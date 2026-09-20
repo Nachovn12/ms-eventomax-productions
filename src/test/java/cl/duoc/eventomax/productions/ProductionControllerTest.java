@@ -3,6 +3,7 @@ package cl.duoc.eventomax.productions;
 import cl.duoc.eventomax.productions.dto.ProductionResponseDTO;
 import cl.duoc.eventomax.productions.dto.ProductionStatusUpdateDTO;
 import cl.duoc.eventomax.productions.model.ProductionStatus;
+import cl.duoc.eventomax.productions.service.InvalidProductionStatusException;
 import cl.duoc.eventomax.productions.service.InvalidTransitionException;
 import cl.duoc.eventomax.productions.service.ProductionService;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -191,6 +192,25 @@ class ProductionControllerTest {
                 .andExpect(jsonPath("$", hasSize(1)))
                 .andExpect(jsonPath("$[0].id").value(2))
                 .andExpect(jsonPath("$[0].status").value("CONFIRMADO"));
+    }
+
+    // ------------------------------------------------------------------
+    // Test 8 – status inválido → 400
+    // ------------------------------------------------------------------
+
+    @Test
+    void getAll_withInvalidStatus_returns400() throws Exception {
+
+        given(service.getFilteredProductions(eq("NO_EXISTE"), eq(null), eq(null)))
+                .willThrow(new InvalidProductionStatusException(
+                        "Estado de producción inválido: NO_EXISTE. Valores permitidos: [SOLICITADO, CONFIRMADO, EN_MONTAJE, EN_EJECUCION, CERRADO, CANCELADO]"));
+
+        mockMvc.perform(get("/api/productions")
+                        .param("status", "NO_EXISTE"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.status").value(400))
+                .andExpect(jsonPath("$.error").value("Bad Request"))
+                .andExpect(jsonPath("$.message").isString());
     }
 
     // ------------------------------------------------------------------
