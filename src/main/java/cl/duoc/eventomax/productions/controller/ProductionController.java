@@ -89,7 +89,7 @@ public class ProductionController {
                  content = @Content(schema = @Schema(implementation = ProductionResponseDTO.class)))
     @ApiResponse(responseCode = "400", description = "Error de validación (estado nulo o inválido)", content = @Content)
     @ApiResponse(responseCode = "404", description = "Producción no encontrada", content = @Content)
-    @ApiResponse(responseCode = "422", description = "Transición de estado inválida", content = @Content)
+    @ApiResponse(responseCode = "409", description = "Conflicto: Transición de estado inválida", content = @Content)
     @PutMapping("/{id}/status")
     public ResponseEntity<ProductionResponseDTO> updateStatus(
             @Parameter(description = "ID de la producción a actualizar") @PathVariable Long id,

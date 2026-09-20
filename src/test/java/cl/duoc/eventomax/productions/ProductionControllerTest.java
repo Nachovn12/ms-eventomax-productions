@@ -146,11 +146,32 @@ class ProductionControllerTest {
     }
 
     // ------------------------------------------------------------------
-    // Test 6 – PUT transición inválida → 422
+    // Test 5b – PUT producción inexistente → 404
     // ------------------------------------------------------------------
 
     @Test
-    void updateStatus_invalidTransition_returns422() throws Exception {
+    void updateStatus_missingProduction_returns404() throws Exception {
+
+        given(service.updateStatus(eq(99L), any()))
+                .willThrow(new cl.duoc.eventomax.productions.service.ResourceNotFoundException("Producción no encontrada"));
+
+        String body = objectMapper.writeValueAsString(
+                new ProductionStatusUpdateDTO(ProductionStatus.CONFIRMADO));
+
+        mockMvc.perform(put("/api/productions/99/status")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.status").value(404))
+                .andExpect(jsonPath("$.error").value("Not Found"));
+    }
+
+    // ------------------------------------------------------------------
+    // Test 6 – PUT transición inválida → 409
+    // ------------------------------------------------------------------
+
+    @Test
+    void updateStatus_invalidTransition_returns409() throws Exception {
 
         given(service.updateStatus(eq(1L), any()))
                 .willThrow(new InvalidTransitionException(
@@ -163,9 +184,9 @@ class ProductionControllerTest {
         mockMvc.perform(put("/api/productions/1/status")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(body))
-                .andExpect(status().isUnprocessableEntity())
-                .andExpect(jsonPath("$.status").value(422))
-                .andExpect(jsonPath("$.error").value("Unprocessable Entity"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.status").value(409))
+                .andExpect(jsonPath("$.error").value("Conflict"))
                 .andExpect(jsonPath("$.message").isString());
     }
 
@@ -191,6 +212,23 @@ class ProductionControllerTest {
                 .andExpect(jsonPath("$", hasSize(1)))
                 .andExpect(jsonPath("$[0].id").value(2))
                 .andExpect(jsonPath("$[0].status").value("CONFIRMADO"));
+    }
+
+    // ------------------------------------------------------------------
+    // Test 7b – GET /api/productions?status=NO_EXISTE → filtro por status inválido 400
+    // ------------------------------------------------------------------
+
+    @Test
+    void getAll_withInvalidStatusFilter_returns400() throws Exception {
+        given(service.getFilteredProductions(eq("NO_EXISTE"), eq(null), eq(null)))
+                .willThrow(new IllegalArgumentException("Estado de producción no válido: NO_EXISTE"));
+
+        mockMvc.perform(get("/api/productions")
+                        .param("status", "NO_EXISTE"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.status").value(400))
+                .andExpect(jsonPath("$.error").value("Bad Request"))
+                .andExpect(jsonPath("$.message").isString());
     }
 
     // ------------------------------------------------------------------
@@ -308,6 +346,21 @@ class ProductionControllerTest {
         mockMvc.perform(put("/api/productions/1/status")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"status\": null}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.status").value(400))
+                .andExpect(jsonPath("$.error").value("Bad Request"));
+    }
+
+    // ------------------------------------------------------------------
+    // Test 12b – PUT con status inválido (String no mappeable) → 400
+    // ------------------------------------------------------------------
+
+    @Test
+    void updateStatus_invalidStatusString_returns400() throws Exception {
+
+        mockMvc.perform(put("/api/productions/1/status")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"status\": \"NO_EXISTE_TIPO\"}"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.status").value(400))
                 .andExpect(jsonPath("$.error").value("Bad Request"));

@@ -70,7 +70,11 @@ public class ProductionService {
 
         ProductionStatus status = null;
         if (statusStr != null && !statusStr.isBlank()) {
-            status = ProductionStatus.valueOf(statusStr);
+            try {
+                status = ProductionStatus.valueOf(statusStr.toUpperCase());
+            } catch (IllegalArgumentException e) {
+                throw new IllegalArgumentException("Estado de producción no válido: " + statusStr);
+            }
         }
 
         return repository.findByFilters(status, from, to)
