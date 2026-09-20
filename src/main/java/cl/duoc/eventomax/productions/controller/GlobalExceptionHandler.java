@@ -66,15 +66,64 @@ public class GlobalExceptionHandler {
 
         Map<String, Object> response = Map.of(
                 "timestamp", LocalDateTime.now(),
-                "status", 422,
-                "error", "Unprocessable Entity",
+                "status", 409,
+                "error", "Conflict",
                 "message", ex.getMessage()
         );
 
         return ResponseEntity
-                .status(HttpStatus.UNPROCESSABLE_ENTITY)
+                .status(HttpStatus.CONFLICT)
                 .body(response);
 
+    }
+
+    @ExceptionHandler(IllegalArgumentException.class)
+    public ResponseEntity<Map<String, Object>> handleIllegalArgument(
+            IllegalArgumentException ex) {
+
+        Map<String, Object> response = Map.of(
+                "timestamp", LocalDateTime.now(),
+                "status", 400,
+                "error", "Bad Request",
+                "message", ex.getMessage()
+        );
+
+        return ResponseEntity
+                .status(HttpStatus.BAD_REQUEST)
+                .body(response);
+
+    }
+
+    @ExceptionHandler(org.springframework.http.converter.HttpMessageNotReadableException.class)
+    public ResponseEntity<Map<String, Object>> handleHttpMessageNotReadable(
+            org.springframework.http.converter.HttpMessageNotReadableException ex) {
+
+        Map<String, Object> response = Map.of(
+                "timestamp", LocalDateTime.now(),
+                "status", 400,
+                "error", "Bad Request",
+                "message", "Malformed JSON request or invalid fields"
+        );
+
+        return ResponseEntity
+                .status(HttpStatus.BAD_REQUEST)
+                .body(response);
+
+    }
+
+    @ExceptionHandler(Exception.class)
+    public ResponseEntity<Map<String, Object>> handleException(Exception ex) {
+
+        Map<String, Object> response = Map.of(
+                "timestamp", LocalDateTime.now(),
+                "status", 500,
+                "error", "Internal Server Error",
+                "message", "An unexpected error occurred"
+        );
+
+        return ResponseEntity
+                .status(HttpStatus.INTERNAL_SERVER_ERROR)
+                .body(response);
     }
 
 }
