@@ -52,6 +52,7 @@ public class ProductionController {
 
     @Operation(summary = "Listar producciones", description = "Obtiene el listado de todas las producciones. Permite filtrar opcionalmente por estado y rango de fechas.")
     @ApiResponse(responseCode = "200", description = "Listado obtenido exitosamente")
+    @ApiResponse(responseCode = "400", description = "Estado de filtro inválido", content = @Content)
     @GetMapping
     public ResponseEntity<List<ProductionResponseDTO>> getAll(
             @Parameter(description = "Filtro por estado de la producción (Ej: CONFIRMADO)") @RequestParam(required = false) String status,
