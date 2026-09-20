@@ -89,158 +89,67 @@ Flujo de integración:
 
 `feature/* → Pull Request → develop → pruebas → Pull Request → main`
 
-## Ejecución local
-
-Requisitos: JDK 25 y acceso a PostgreSQL para ejecutar la aplicación.
-La configuración principal está en `src/main/resources/application.yml`.
-Las variables de entorno requeridas son `DB_URL`, `DB_USER` y `DB_PASSWORD`.
-En desarrollo local se usan valores de respaldo definidos en `application.yml`.
-En producción deben inyectarse externamente (sin valores de respaldo).
-No guardar credenciales reales en archivos versionados.
-
-Compilar y verificar en Windows:
-
-```powershell
-.\mvnw.cmd clean verify
-.\mvnw.cmd clean package
-```
-
-En Linux/macOS, usar `./mvnw` en lugar de `.\mvnw.cmd`.
-El JAR ejecutable se genera en `target/ms-eventomax-productions-0.0.1-SNAPSHOT.jar`.
-
-El test de arranque activa el perfil `test`, configurado únicamente en
-`src/test/resources/application-test.yml`: H2 en modo PostgreSQL, Flyway habilitado
-y `ddl-auto=validate`. H2 es una dependencia exclusiva de tests.
-
-### EMX-49 – Persistencia mínima de Production
-
-EMX-49 deja alineada la persistencia mínima de `Production` con el contrato EP1
-aprobado en EMX-39:
-
-- `id`
-- `organizerId`
-- `name`
-- `scheduledAt`
-- `location`
-- `status`
-- `createdAt`
-- `updatedAt`
-
-El request de creación acepta `organizerId`, `name`, `scheduledAt` y `location`.
-El backend establece `SOLICITADO` como estado inicial.
-`organizerId` pasará a derivarse del JWT cuando se integre la capa de seguridad.
-
-La migración `V1__create_productions_table.sql` fue corregida directamente antes de
-su primera aplicación en el entorno compartido. La verificación realizada sobre
-Amazon RDS confirmó que no existían ni `flyway_schema_history` ni la tabla
-`public.productions`, por lo que no correspondía crear una migración V2.
-
-### EMX-50 – API REST mínima (completado)
-
-EMX-50 implementa la API REST completa sobre el dominio `Production`:
-
-**Endpoints disponibles:**
-
-| Método | Ruta | Descripción |
-|--------|------|-------------|
-| `POST` | `/api/productions` | Crear producción (estado inicial: `SOLICITADO`) |
-| `GET` | `/api/productions` | Listar producciones (soporta filtros: `status`, `from`, `to`) |
-| `GET` | `/api/productions/{id}` | Obtener producción por ID |
-| `PUT` | `/api/productions/{id}/status` | Actualizar estado con validación de transición |
-
-**Reglas de transición implementadas:**
-
-```
-SOLICITADO  → CONFIRMADO | CANCELADO
-CONFIRMADO  → EN_MONTAJE | CANCELADO
-EN_MONTAJE  → EN_EJECUCION | CANCELADO
-EN_EJECUCION → CERRADO | CANCELADO
-CERRADO     → (terminal)
-CANCELADO   → (terminal)
-```
-
-**Manejo de errores uniforme:**
-
-| HTTP | Situación |
-|------|-----------|
-| `201` | Creación exitosa |
-| `400` | Validación de campos del request |
-| `404` | Producción no encontrada |
-| `422` | Transición de estado inválida |
-
-**Documentación Interactiva:**
-
-- **Swagger UI:** [http://localhost:8080/swagger-ui/index.html](http://localhost:8080/swagger-ui/index.html)
-- **OpenAPI JSON:** [http://localhost:8080/v3/api-docs](http://localhost:8080/v3/api-docs)
-
-### EMX-51 – Pruebas del slice (completado en rama EMX-50)
-
-Tests implementados y pasando (`mvn test`):
-
-- `MsEventomaxProductionsApplicationTests` – arranque del contexto
-- `ProductionPersistenceTest` – esquema Flyway + persistencia JPA (2 tests)
-- `ProductionControllerTest` – slice `@WebMvcTest` con MockMvc (13 tests)
-
-Total: **16 tests, 0 fallos**.
-
 ## Ejecución
 
-El proyecto está preparado para ejecutarse de dos maneras en entornos locales:
+### Docker Compose (recomendado)
 
-### Opción 1: Docker Compose (Recomendado)
+El entorno local de desarrollo puede levantar PostgreSQL y la aplicación mediante Docker Compose.
 
-Levanta la base de datos PostgreSQL y la aplicación de Spring Boot en contenedores enlazados.
-
-1. Copiar la plantilla de variables de entorno y completarla si se requiere (por defecto los puertos internos están listos):
+1. Copiar la plantilla:
 
 ```bash
 cp .env.example .env
 ```
 
-2. Construir y levantar los servicios:
+2. Completar únicamente los valores locales necesarios y levantar:
 
 ```bash
 docker compose up --build -d
 ```
 
-### Opción 2: Ejecución Nativa (Perfil Local)
+3. Validar health:
 
-Permite ejecutar la aplicación directamente en la máquina host, conectándose a la base de datos de Docker expuesta en localhost. Ideal para debug con IDEs.
-
-1. Levantar solo la base de datos:
-```bash
-docker compose up postgres -d
-```
-
-2. Compilar y ejecutar usando el perfil `local` (que preconfigura el host y credenciales PostgreSQL):
-```bash
-mvn clean package -DskipTests
-java -jar target/ms-eventomax-productions-0.0.1-SNAPSHOT.jar --spring.profiles.active=local
-```
-
-3. Validar health check:
-
-```
+```text
 GET http://localhost:8080/actuator/health
-```
-
-Respuesta esperada:
-
-```json
-{ "status": "UP" }
 ```
 
 4. Validar API:
 
-```
+```text
 GET http://localhost:8080/api/productions
 ```
 
-5. Detener los servicios:
+5. Detener:
 
 ```bash
 docker compose down
 ```
+
+### Ejecución nativa
+
+La configuración versionada requiere las variables de entorno `DB_URL`, `DB_USER` y `DB_PASSWORD`; no se mantienen credenciales de respaldo en `application.yml`.
+
+Windows:
+
+```powershell
+$env:DB_URL = "jdbc:postgresql://localhost:5432/<database>"
+$env:DB_USER = "<user>"
+$env:DB_PASSWORD = "<password>"
+.\mvnw.cmd clean verify
+.\mvnw.cmd spring-boot:run
+```
+
+Linux/macOS:
+
+```bash
+export DB_URL="jdbc:postgresql://localhost:5432/<database>"
+export DB_USER="<user>"
+export DB_PASSWORD="<password>"
+./mvnw clean verify
+./mvnw spring-boot:run
+```
+
+No guardar credenciales reales en archivos versionados.
 
 ## Preparación AWS
 
