@@ -1,23 +1,33 @@
 package cl.duoc.eventomax.productions.config;
 
+import io.swagger.v3.oas.models.Components;
 import io.swagger.v3.oas.models.OpenAPI;
 import io.swagger.v3.oas.models.info.Contact;
 import io.swagger.v3.oas.models.info.Info;
+import io.swagger.v3.oas.models.security.SecurityRequirement;
+import io.swagger.v3.oas.models.security.SecurityScheme;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
-@Configuration
+@Configuration(proxyBeanMethods = false)
 public class OpenApiConfig {
 
     @Bean
-    public OpenAPI customOpenAPI() {
+    public OpenAPI eventomaxProductionsOpenAPI() {
         return new OpenAPI()
                 .info(new Info()
                         .title("EventoMax Productions API")
-                        .version("1.0")
-                        .description("Microservicio de dominio de EventoMax responsable de la gestión de eventos y producciones.")
+                        .version("1.0.0")
+                        .description("Contrato del microservicio de producciones. "
+                                + "El acceso externo se realiza mediante API Gateway y ms-eventomax-bff.")
                         .contact(new Contact()
-                                .name("Equipo EventoMax")
-                                .email("soporte@eventomax.com")));
+                                .name("Equipo EventoMax")))
+                .components(new Components()
+                        .addSecuritySchemes("bearerAuth",
+                                new SecurityScheme()
+                                        .type(SecurityScheme.Type.HTTP)
+                                        .scheme("bearer")
+                                        .bearerFormat("JWT")))
+                .addSecurityItem(new SecurityRequirement().addList("bearerAuth"));
     }
 }
