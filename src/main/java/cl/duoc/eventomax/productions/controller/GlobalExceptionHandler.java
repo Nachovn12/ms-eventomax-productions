@@ -1,5 +1,6 @@
 package cl.duoc.eventomax.productions.controller;
 
+import cl.duoc.eventomax.productions.service.InvalidProductionStatusException;
 import cl.duoc.eventomax.productions.service.InvalidTransitionException;
 import cl.duoc.eventomax.productions.service.ResourceNotFoundException;
 
@@ -59,6 +60,22 @@ public class GlobalExceptionHandler {
 
     }
 
+
+    @ExceptionHandler(InvalidProductionStatusException.class)
+    public ResponseEntity<Map<String, Object>> handleInvalidProductionStatus(
+            InvalidProductionStatusException ex) {
+
+        Map<String, Object> response = Map.of(
+                "timestamp", LocalDateTime.now(),
+                "status", 400,
+                "error", "Bad Request",
+                "message", ex.getMessage()
+        );
+
+        return ResponseEntity
+                .status(HttpStatus.BAD_REQUEST)
+                .body(response);
+    }
 
     @ExceptionHandler(InvalidTransitionException.class)
     public ResponseEntity<Map<String, Object>> handleInvalidTransition(
