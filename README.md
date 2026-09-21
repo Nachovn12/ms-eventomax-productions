@@ -12,6 +12,7 @@ Microservicio de dominio de **EventoMax** responsable de la gestión de eventos,
 - PostgreSQL
 - Maven
 - OpenAPI / Swagger
+- Docker
 
 ## Responsabilidades
 
@@ -19,7 +20,6 @@ Microservicio de dominio de **EventoMax** responsable de la gestión de eventos,
 
 - Crear y consultar eventos.
 - Gestionar el ciclo de estados de una producción.
-- Coordinar la asignación de cuadrillas.
 - Validar reglas de negocio asociadas a los estados.
 - Persistir la información propia del dominio de producciones.
 - Exponer operaciones bajo `/api/productions/*`.
@@ -44,9 +44,14 @@ Las reglas de transición deben validarse en backend.
 
 El microservicio forma parte del flujo seguro de EventoMax:
 
-`Angular → Microsoft Entra ID → JWT → AWS API Gateway → ms-eventomax-bff → ms-eventomax-productions → PostgreSQL`
+`Angular → Microsoft Entra ID → JWT → AWS API Gateway → ms-eventomax-bff → ms-eventomax-productions → Amazon RDS for PostgreSQL`
 
 El frontend no accede directamente a este servicio ni a su base de datos.
+El servicio no es público y recibe tráfico protegido y orquestado exclusivamente desde el BFF.
+
+No se debe agregar Spring Security directamente a Productions. La seguridad JWT/roles/scopes se aplica en API Gateway + BFF para este alcance.
+
+*Nota: La integración avanzada con cuadrillas mediante RabbitMQ o Kafka, notificaciones, auditoría y reportería pertenecen a etapas posteriores del semestre, fuera del alcance inicial (EP1).*
 
 ## Persistencia
 
@@ -56,7 +61,7 @@ El microservicio utilizará PostgreSQL mediante:
 - Hibernate
 - Flyway
 
-En cloud se utilizará Amazon RDS for PostgreSQL.
+En cloud se utilizará **Amazon RDS for PostgreSQL**.
 
 El servicio es propietario de sus propios datos y no debe realizar consultas SQL directas sobre datos internos de otros microservicios.
 
@@ -117,27 +122,12 @@ y `ddl-auto=validate`. H2 es una dependencia exclusiva de tests.
 EMX-49 deja alineada la persistencia mínima de `Production` con el contrato EP1
 aprobado en EMX-39:
 
-- `id`
-- `organizerId`
-- `name`
-- `scheduledAt`
-- `location`
-- `status`
-- `createdAt`
-- `updatedAt`
+- `id`, `organizerId`, `name`, `scheduledAt`, `location`, `status`, `createdAt`, `updatedAt`
 
 El request de creación acepta `organizerId`, `name`, `scheduledAt` y `location`.
 El backend establece `SOLICITADO` como estado inicial.
-`organizerId` pasará a derivarse del JWT cuando se integre la capa de seguridad.
 
-La migración `V1__create_productions_table.sql` fue corregida directamente antes de
-su primera aplicación en el entorno compartido. La verificación realizada sobre
-Amazon RDS confirmó que no existían ni `flyway_schema_history` ni la tabla
-`public.productions`, por lo que no correspondía crear una migración V2.
-
-### EMX-50 – API REST mínima (completado)
-
-EMX-50 implementa la API REST completa sobre el dominio `Production`:
+### EMX-50 – API REST mínima
 
 **Endpoints disponibles:**
 
@@ -148,17 +138,6 @@ EMX-50 implementa la API REST completa sobre el dominio `Production`:
 | `GET` | `/api/productions/{id}` | Obtener producción por ID |
 | `PUT` | `/api/productions/{id}/status` | Actualizar estado con validación de transición |
 
-**Reglas de transición implementadas:**
-
-```
-SOLICITADO  → CONFIRMADO | CANCELADO
-CONFIRMADO  → EN_MONTAJE | CANCELADO
-EN_MONTAJE  → EN_EJECUCION | CANCELADO
-EN_EJECUCION → CERRADO | CANCELADO
-CERRADO     → (terminal)
-CANCELADO   → (terminal)
-```
-
 **Manejo de errores uniforme:**
 
 | HTTP | Situación |
@@ -166,22 +145,28 @@ CANCELADO   → (terminal)
 | `201` | Creación exitosa |
 | `400` | Validación de campos del request |
 | `404` | Producción no encontrada |
-| `422` | Transición de estado inválida |
+| `409` | Transición de estado inválida |
 
 **Documentación Interactiva:**
 
 - **Swagger UI:** [http://localhost:8080/swagger-ui/index.html](http://localhost:8080/swagger-ui/index.html)
 - **OpenAPI JSON:** [http://localhost:8080/v3/api-docs](http://localhost:8080/v3/api-docs)
 
-### EMX-51 – Pruebas del slice (completado en rama EMX-50)
+### EMX-51 – Pruebas del slice y Hardening EP1
 
-Tests implementados y pasando (`mvn test`):
+Tests implementados y pasando (`mvn clean test`):
 
 - `MsEventomaxProductionsApplicationTests` – arranque del contexto
-- `ProductionPersistenceTest` – esquema Flyway + persistencia JPA (2 tests)
-- `ProductionControllerTest` – slice `@WebMvcTest` con MockMvc (13 tests)
+- `ProductionPersistenceTest` – esquema Flyway + persistencia JPA
+- `ProductionControllerTest` – slice `@WebMvcTest` con MockMvc
+- `ProductionServiceTest` – lógica de transición de estados terminales
 
-Total: **16 tests, 0 fallos**.
+Total:
+```text
+30 tests
+0 failures
+0 errors
+```
 
 ## Ejecución
 
@@ -191,19 +176,26 @@ El proyecto está preparado para ejecutarse de dos maneras en entornos locales:
 
 Levanta la base de datos PostgreSQL y la aplicación de Spring Boot en contenedores enlazados.
 
-1. Copiar la plantilla de variables de entorno y completarla si se requiere (por defecto los puertos internos están listos):
+1. Copiar la plantilla de variables de entorno y completarla si se requiere:
 
 ```bash
 cp .env.example .env
 ```
 
+Dentro de Docker Compose local, el hostname PostgreSQL es `postgres`.
+
 2. Construir y levantar los servicios:
 
-```bash
-docker compose up --build -d
+```powershell
+docker compose --env-file .env up -d --build
 ```
 
-### Opción 2: Ejecución Nativa (Perfil Local)
+La aplicación queda publicada localmente en:
+```text
+localhost:8082
+```
+
+### Opción 2: Ejecución Nativa
 
 Permite ejecutar la aplicación directamente en la máquina host, conectándose a la base de datos de Docker expuesta en localhost. Ideal para debug con IDEs.
 
@@ -212,11 +204,15 @@ Permite ejecutar la aplicación directamente en la máquina host, conectándose 
 docker compose up postgres -d
 ```
 
-2. Compilar y ejecutar usando el perfil `local` (que preconfigura el host y credenciales PostgreSQL):
-```bash
-mvn clean package -DskipTests
-java -jar target/ms-eventomax-productions-0.0.1-SNAPSHOT.jar --spring.profiles.active=local
+2. Compilar y ejecutar nativamente configurando las variables de entorno:
+```powershell
+$env:DB_URL="jdbc:postgresql://localhost:5432/<DB_LOCAL>"
+$env:DB_USER="<USUARIO_LOCAL>"
+$env:DB_PASSWORD="<PASSWORD_LOCAL>"
+.\mvnw.cmd spring-boot:run
 ```
+
+Fuera de Docker, ejecutando Spring Boot nativamente, normalmente se utiliza `localhost`.
 
 3. Validar health check:
 
@@ -230,27 +226,29 @@ Respuesta esperada:
 { "status": "UP" }
 ```
 
-4. Validar API:
-
-```
-GET http://localhost:8080/api/productions
-```
-
-5. Detener los servicios:
+4. Detener los servicios:
 
 ```bash
 docker compose down
 ```
 
-## Preparación AWS
+## Preparación AWS (Producción)
 
-El microservicio está preparado para despliegue en la arquitectura EventoMax sobre AWS:
+El microservicio está preparado para despliegue en la arquitectura EventoMax sobre AWS mediante el archivo `docker-compose.prod.yml`. Este archivo:
 
-- **Cómputo:** la imagen Docker se desplegará en **Amazon EC2**.
-- **Base de datos:** PostgreSQL productivo será provisto por **Amazon RDS for PostgreSQL**.
-- **Configuración:** las variables `DB_URL`, `DB_USER` y `DB_PASSWORD` serán inyectadas mediante **variables de entorno** o **AWS Secrets Manager** en la instancia EC2.
-- **Seguridad:** no se subirán archivos `.env` reales al repositorio. Las credenciales productivas se gestionan exclusivamente en la infraestructura AWS.
-- **Health check:** el endpoint `/actuator/health` está disponible para monitoreo del **Application Load Balancer** y Docker HEALTHCHECK.
+- contiene solamente Productions
+- no levanta PostgreSQL
+- consume `DB_URL`, `DB_USER`, `DB_PASSWORD`
+- usa la red externa `eventomax-net`
+- no publica el puerto 8080 al host
+- permite al BFF resolver internamente:
+
+```text
+http://ms-eventomax-productions:8080
+```
+
+Las variables `DB_URL`, `DB_USER` y `DB_PASSWORD` serán inyectadas en la instancia EC2.
+El endpoint `/actuator/health` está disponible para monitoreo del **Application Load Balancer** y Docker HEALTHCHECK.
 
 ## Proyecto académico
 

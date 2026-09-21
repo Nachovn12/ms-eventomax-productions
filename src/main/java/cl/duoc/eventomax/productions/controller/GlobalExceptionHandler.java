@@ -17,6 +17,8 @@ import java.util.stream.Collectors;
 @RestControllerAdvice
 public class GlobalExceptionHandler {
 
+    private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(GlobalExceptionHandler.class);
+
 
     @ExceptionHandler(MethodArgumentNotValidException.class)
     public ResponseEntity<Map<String, Object>> handleValidation(
@@ -111,8 +113,42 @@ public class GlobalExceptionHandler {
 
     }
 
+    @ExceptionHandler(org.springframework.web.method.annotation.MethodArgumentTypeMismatchException.class)
+    public ResponseEntity<Map<String, Object>> handleTypeMismatch(
+            org.springframework.web.method.annotation.MethodArgumentTypeMismatchException ex) {
+
+        Map<String, Object> response = Map.of(
+                "timestamp", LocalDateTime.now(),
+                "status", 400,
+                "error", "Bad Request",
+                "message", "Invalid parameter type: " + ex.getName()
+        );
+
+        return ResponseEntity
+                .status(HttpStatus.BAD_REQUEST)
+                .body(response);
+
+    }
+
+    @ExceptionHandler(org.springframework.web.HttpMediaTypeNotSupportedException.class)
+    public ResponseEntity<Map<String, Object>> handleMediaTypeNotSupported(
+            org.springframework.web.HttpMediaTypeNotSupportedException ex) {
+
+        Map<String, Object> response = Map.of(
+                "timestamp", LocalDateTime.now(),
+                "status", 415,
+                "error", "Unsupported Media Type",
+                "message", "Media type not supported. Please use application/json"
+        );
+
+        return ResponseEntity
+                .status(HttpStatus.UNSUPPORTED_MEDIA_TYPE)
+                .body(response);
+    }
+
     @ExceptionHandler(Exception.class)
     public ResponseEntity<Map<String, Object>> handleException(Exception ex) {
+        log.error("Unexpected error processing request", ex);
 
         Map<String, Object> response = Map.of(
                 "timestamp", LocalDateTime.now(),
