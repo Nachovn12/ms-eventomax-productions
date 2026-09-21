@@ -100,5 +100,23 @@ class ProductionServiceTest {
         var result = service.updateStatus(1L, request);
         assertEquals("CERRADO", result.status());
     }
+
+    @Test
+    void updateStatus_cerradoIsTerminal_throwsInvalidTransitionException() {
+        production.setStatus(ProductionStatus.CERRADO);
+        when(repository.findById(1L)).thenReturn(Optional.of(production));
+
+        ProductionStatusUpdateDTO request = new ProductionStatusUpdateDTO(ProductionStatus.CANCELADO);
+        assertThrows(InvalidTransitionException.class, () -> service.updateStatus(1L, request));
+    }
+
+    @Test
+    void updateStatus_canceladoIsTerminal_throwsInvalidTransitionException() {
+        production.setStatus(ProductionStatus.CANCELADO);
+        when(repository.findById(1L)).thenReturn(Optional.of(production));
+
+        ProductionStatusUpdateDTO request = new ProductionStatusUpdateDTO(ProductionStatus.CONFIRMADO);
+        assertThrows(InvalidTransitionException.class, () -> service.updateStatus(1L, request));
+    }
 }
 

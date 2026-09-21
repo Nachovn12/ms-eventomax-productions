@@ -390,5 +390,46 @@ class ProductionControllerTest {
                 .andExpect(jsonPath("$.error").value("Bad Request"))
                 .andExpect(jsonPath("$.message").isString());
     }
-}
 
+    // ------------------------------------------------------------------
+    // Test 14 – Path variable no numérico → 400 (MethodArgumentTypeMismatchException)
+    // ------------------------------------------------------------------
+
+    @Test
+    void getById_invalidIdType_returns400() throws Exception {
+        mockMvc.perform(get("/api/productions/abc"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.status").value(400))
+                .andExpect(jsonPath("$.error").value("Bad Request"))
+                .andExpect(jsonPath("$.message").value("Invalid parameter type: id"));
+    }
+
+    // ------------------------------------------------------------------
+    // Test 15 – Query param date con formato inválido → 400
+    // ------------------------------------------------------------------
+
+    @Test
+    void getAll_invalidDateFilter_returns400() throws Exception {
+        mockMvc.perform(get("/api/productions")
+                        .param("from", "fecha-invalida"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.status").value(400))
+                .andExpect(jsonPath("$.error").value("Bad Request"))
+                .andExpect(jsonPath("$.message").value("Invalid parameter type: from"));
+    }
+
+    // ------------------------------------------------------------------
+    // Test 16 – Unsupported Media Type → 415
+    // ------------------------------------------------------------------
+
+    @Test
+    void create_unsupportedMediaType_returns415() throws Exception {
+        mockMvc.perform(post("/api/productions")
+                        .contentType(MediaType.TEXT_PLAIN)
+                        .content("texto plano"))
+                .andExpect(status().isUnsupportedMediaType())
+                .andExpect(jsonPath("$.status").value(415))
+                .andExpect(jsonPath("$.error").value("Unsupported Media Type"))
+                .andExpect(jsonPath("$.message").value("Media type not supported. Please use application/json"));
+    }
+}
