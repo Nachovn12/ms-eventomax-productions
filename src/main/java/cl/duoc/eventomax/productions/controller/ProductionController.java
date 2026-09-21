@@ -4,6 +4,7 @@ import cl.duoc.eventomax.productions.dto.ProductionRequestDTO;
 import cl.duoc.eventomax.productions.dto.ProductionResponseDTO;
 import cl.duoc.eventomax.productions.dto.ProductionStatusUpdateDTO;
 import cl.duoc.eventomax.productions.service.ProductionService;
+import cl.duoc.eventomax.productions.service.ResourceNotFoundException;
 
 import jakarta.validation.Valid;
 
@@ -35,7 +36,7 @@ public class ProductionController {
 
 
     @Operation(summary = "Crear nueva producción", description = "Crea una solicitud de evento. El estado inicial siempre será SOLICITADO.")
-    @ApiResponse(responseCode = "201", description = "Producción creada exitosamente", 
+    @ApiResponse(responseCode = "201", description = "Producción creada exitosamente",
                  content = @Content(schema = @Schema(implementation = ProductionResponseDTO.class)))
     @ApiResponse(responseCode = "400", description = "Error de validación en los campos del request", content = @Content)
     @PostMapping
@@ -52,6 +53,7 @@ public class ProductionController {
 
     @Operation(summary = "Listar producciones", description = "Obtiene el listado de todas las producciones. Permite filtrar opcionalmente por estado y rango de fechas.")
     @ApiResponse(responseCode = "200", description = "Listado obtenido exitosamente")
+    @ApiResponse(responseCode = "400", description = "Estado o rango de fechas inválido", content = @Content)
     @GetMapping
     public ResponseEntity<List<ProductionResponseDTO>> getAll(
             @Parameter(description = "Filtro por estado de la producción (Ej: CONFIRMADO)") @RequestParam(required = false) String status,
@@ -70,7 +72,7 @@ public class ProductionController {
 
 
     @Operation(summary = "Obtener producción por ID", description = "Consulta el detalle de una producción específica usando su identificador único.")
-    @ApiResponse(responseCode = "200", description = "Producción encontrada", 
+    @ApiResponse(responseCode = "200", description = "Producción encontrada",
                  content = @Content(schema = @Schema(implementation = ProductionResponseDTO.class)))
     @ApiResponse(responseCode = "404", description = "Producción no encontrada", content = @Content)
     @GetMapping("/{id}")
@@ -79,13 +81,13 @@ public class ProductionController {
 
         return service.getProductionById(id)
                 .map(ResponseEntity::ok)
-                .orElseGet(() -> ResponseEntity.notFound().build());
+                .orElseThrow(() -> new ResourceNotFoundException("Produccion no encontrada con id: " + id));
 
     }
 
 
     @Operation(summary = "Actualizar estado de producción", description = "Cambia el estado de una producción validando las reglas de transición. Estados válidos: SOLICITADO, CONFIRMADO, EN_MONTAJE, EN_EJECUCION, CERRADO, CANCELADO.")
-    @ApiResponse(responseCode = "200", description = "Estado actualizado exitosamente", 
+    @ApiResponse(responseCode = "200", description = "Estado actualizado exitosamente",
                  content = @Content(schema = @Schema(implementation = ProductionResponseDTO.class)))
     @ApiResponse(responseCode = "400", description = "Error de validación (estado nulo o inválido)", content = @Content)
     @ApiResponse(responseCode = "404", description = "Producción no encontrada", content = @Content)

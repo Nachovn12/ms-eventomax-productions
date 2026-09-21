@@ -2,23 +2,25 @@ package cl.duoc.eventomax.productions.repository;
 
 import cl.duoc.eventomax.productions.model.Production;
 import cl.duoc.eventomax.productions.model.ProductionStatus;
+import jakarta.persistence.criteria.Predicate;
+import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.List;
 import org.springframework.data.jpa.repository.JpaRepository;
-import org.springframework.data.jpa.repository.Query;
-import org.springframework.data.repository.query.Param;
+import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
 import org.springframework.stereotype.Repository;
 
-import java.time.LocalDateTime;
-import java.util.List;
-
 @Repository
-public interface ProductionRepository extends JpaRepository<Production, Long> {
+public interface ProductionRepository extends JpaRepository<Production, Long>, JpaSpecificationExecutor<Production> {
 
-    @Query("SELECT p FROM Production p WHERE "
-            + "(:status IS NULL OR p.status = :status) AND "
-            + "(:from IS NULL OR p.scheduledAt >= :from) AND "
-            + "(:to IS NULL OR p.scheduledAt <= :to)")
-    List<Production> findByFilters(
-            @Param("status") ProductionStatus status,
-            @Param("from") LocalDateTime from,
-            @Param("to") LocalDateTime to);
+    default List<Production> findByFilters(ProductionStatus status, LocalDateTime from, LocalDateTime to) {
+        // Bind only supplied filters: PostgreSQL cannot infer timestamp parameters in '? IS NULL'.
+        return findAll((root, query, builder) -> {
+            List<Predicate> predicates = new ArrayList<>();
+            if (status != null) predicates.add(builder.equal(root.get("status"), status));
+            if (from != null) predicates.add(builder.greaterThanOrEqualTo(root.get("scheduledAt"), from));
+            if (to != null) predicates.add(builder.lessThanOrEqualTo(root.get("scheduledAt"), to));
+            return builder.and(predicates.toArray(Predicate[]::new));
+        });
+    }
 }

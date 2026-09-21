@@ -28,7 +28,7 @@ Microservicio de dominio de **EventoMax** responsable de la gestión de eventos,
 
 El ciclo principal definido para EventoMax es:
 
-`SOLICITADO → CONFIRMADO → EN_MONTAJE → EN_EJECUCIÓN → CERRADO`
+`SOLICITADO → CONFIRMADO → EN_MONTAJE → EN_EJECUCION → CERRADO`
 
 También existe el estado:
 
@@ -99,8 +99,9 @@ Flujo de integración:
 Requisitos: JDK 25 y acceso a PostgreSQL para ejecutar la aplicación.
 La configuración principal está en `src/main/resources/application.yml`.
 Las variables de entorno requeridas son `DB_URL`, `DB_USER` y `DB_PASSWORD`.
-En desarrollo local se usan valores de respaldo definidos en `application.yml`.
-En producción deben inyectarse externamente (sin valores de respaldo).
+No hay valores de respaldo en `application.yml`: las tres variables deben definirse
+tanto localmente como en producción. Los archivos privados `application-local.*` y
+`application-secrets.*` no se incluyen en el JAR ni en la imagen Docker.
 No guardar credenciales reales en archivos versionados.
 
 Compilar y verificar en Windows:
@@ -160,13 +161,13 @@ Tests implementados y pasando (`mvn clean test`):
 - `ProductionPersistenceTest` – esquema Flyway + persistencia JPA
 - `ProductionControllerTest` – slice `@WebMvcTest` con MockMvc
 - `ProductionServiceTest` – lógica de transición de estados terminales
+- `ProductionApiIntegrationTest` – filtros y timestamps con Controller/Service/JPA reales
 
-Total:
-```text
-30 tests
-0 failures
-0 errors
-```
+La suite incluye pruebas de integración de filtros y timestamps con persistencia real
+del perfil `test`. Consultar el resumen de Maven para el total actualizado: se exige
+`Failures: 0`, `Errors: 0`, `Skipped: 0` y `BUILD SUCCESS`.
+H2 no sustituye PostgreSQL: antes de promover una versión, ejecutar también
+`ProductionApiIntegrationTest` contra una base PostgreSQL desechable.
 
 ## Ejecución
 
@@ -248,9 +249,31 @@ http://ms-eventomax-productions:8080
 ```
 
 Las variables `DB_URL`, `DB_USER` y `DB_PASSWORD` serán inyectadas en la instancia EC2.
-El endpoint `/actuator/health` está disponible para monitoreo del **Application Load Balancer** y Docker HEALTHCHECK.
+El healthcheck Docker consulta `/actuator/health` dentro del contenedor.
+El ALB/API Gateway accede al BFF; Productions no se registra como destino público.
+La demo oficial corre en AWS EC2 con RDS y no depende de un computador local.
+
+En EC2, crear `eventomax-net` si aún no existe y conectar también el BFF a esa red.
+Configurar las variables `DB_*` externamente para RDS y verificar conectividad/TLS.
+Desde el repositorio en la instancia:
+
+```bash
+docker network inspect eventomax-net >/dev/null 2>&1 || docker network create eventomax-net
+docker compose -f docker-compose.prod.yml config --quiet
+docker compose -f docker-compose.prod.yml up -d --build
+docker compose -f docker-compose.prod.yml ps
+```
+
+No combinar el Compose local con el de producción. Validar vía API Gateway/BFF:
+401 sin JWT, lectura 200 con JWT autorizado, POST 201 y transición válida 200.
+Comprobar además filtros opcionales, 400 para un rango `from > to`, 404 para ID
+inexistente y 409 para transición inválida. El PUT devuelve el `updatedAt` persistido;
+las lecturas posteriores no lo modifican.
+
+Los filtros de fecha usan `scheduledAt`, límites inclusivos y fecha/hora local ISO-8601
+sin offset. El estado se envía como `EN_EJECUCION` (sin tilde).
 
 ## Proyecto académico
 
-**Asignatura:** DSY1107 – Desarrollo Cloud Native I  
+**Asignatura:** DSY1107 – Desarrollo Cloud Native I
 **Caso:** Caso 8 – EventoMax

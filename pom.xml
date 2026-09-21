@@ -94,6 +94,15 @@
 	</dependencies>
 
 	<build>
+        <resources>
+            <resource>
+                <directory>src/main/resources</directory>
+                <excludes>
+                    <exclude>application-local.*</exclude>
+                    <exclude>application-secrets.*</exclude>
+                </excludes>
+            </resource>
+        </resources>
 		<plugins>
 			<plugin>
 				<groupId>org.springframework.boot</groupId>
@@ -103,4 +112,3 @@
 	</build>
 
 </project>
-

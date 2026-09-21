@@ -100,7 +100,10 @@ class ProductionControllerTest {
         given(service.getProductionById(99L)).willReturn(Optional.empty());
 
         mockMvc.perform(get("/api/productions/99"))
-                .andExpect(status().isNotFound());
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.status").value(404))
+                .andExpect(jsonPath("$.timestamp").exists())
+                .andExpect(jsonPath("$.message").isString());
     }
 
     // ------------------------------------------------------------------
@@ -431,5 +434,28 @@ class ProductionControllerTest {
                 .andExpect(jsonPath("$.status").value(415))
                 .andExpect(jsonPath("$.error").value("Unsupported Media Type"))
                 .andExpect(jsonPath("$.message").value("Media type not supported. Please use application/json"));
+    }
+    @Test
+    void unsupportedMethodReturns405() throws Exception {
+        mockMvc.perform(delete("/api/productions"))
+                .andExpect(status().isMethodNotAllowed())
+                .andExpect(header().exists("Allow"))
+                .andExpect(jsonPath("$.status").value(405));
+    }
+
+    @Test
+    void malformedJsonReturns400() throws Exception {
+        mockMvc.perform(post("/api/productions").contentType(MediaType.APPLICATION_JSON).content("{"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.timestamp").exists());
+    }
+
+    @Test
+    void unexpectedErrorDoesNotExposeInternalDetails() throws Exception {
+        given(service.getAllProductions()).willThrow(new IllegalStateException("internal-diagnostic-marker"));
+        mockMvc.perform(get("/api/productions"))
+                .andExpect(status().isInternalServerError())
+                .andExpect(jsonPath("$.message").value("An unexpected error occurred"))
+                .andExpect(jsonPath("$.timestamp").exists());
     }
 }
