@@ -1,0 +1,18 @@
+services:
+  productions:
+    build:
+      context: .
+    container_name: ms-eventomax-productions
+    expose:
+      - "8080"
+    environment:
+      DB_URL: ${DB_URL}
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+    networks:
+      - eventomax-net
+    restart: unless-stopped
+
+networks:
+  eventomax-net:
+    external: true
