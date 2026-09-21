@@ -38,7 +38,7 @@ class ProductionServiceTest {
     @Test
     void updateStatus_missingProduction_throwsResourceNotFoundException() {
         when(repository.findById(99L)).thenReturn(Optional.empty());
-        
+
         ProductionStatusUpdateDTO request = new ProductionStatusUpdateDTO(ProductionStatus.CONFIRMADO);
         assertThrows(ResourceNotFoundException.class, () -> service.updateStatus(99L, request));
     }
@@ -48,7 +48,7 @@ class ProductionServiceTest {
     void updateStatus_solicitadoToConfirmado_success() {
         production.setStatus(ProductionStatus.SOLICITADO);
         when(repository.findById(1L)).thenReturn(Optional.of(production));
-        when(repository.save(any(Production.class))).thenAnswer(i -> i.getArguments()[0]);
+        when(repository.saveAndFlush(any(Production.class))).thenAnswer(i -> i.getArguments()[0]);
 
         ProductionStatusUpdateDTO request = new ProductionStatusUpdateDTO(ProductionStatus.CONFIRMADO);
         var result = service.updateStatus(1L, request);
@@ -60,7 +60,7 @@ class ProductionServiceTest {
     void updateStatus_confirmadoToEnMontaje_success() {
         production.setStatus(ProductionStatus.CONFIRMADO);
         when(repository.findById(1L)).thenReturn(Optional.of(production));
-        when(repository.save(any(Production.class))).thenAnswer(i -> i.getArguments()[0]);
+        when(repository.saveAndFlush(any(Production.class))).thenAnswer(i -> i.getArguments()[0]);
 
         ProductionStatusUpdateDTO request = new ProductionStatusUpdateDTO(ProductionStatus.EN_MONTAJE);
         var result = service.updateStatus(1L, request);
@@ -82,7 +82,7 @@ class ProductionServiceTest {
     void updateStatus_enMontajeToEnEjecucion_success() {
         production.setStatus(ProductionStatus.EN_MONTAJE);
         when(repository.findById(1L)).thenReturn(Optional.of(production));
-        when(repository.save(any(Production.class))).thenAnswer(i -> i.getArguments()[0]);
+        when(repository.saveAndFlush(any(Production.class))).thenAnswer(i -> i.getArguments()[0]);
 
         ProductionStatusUpdateDTO request = new ProductionStatusUpdateDTO(ProductionStatus.EN_EJECUCION);
         var result = service.updateStatus(1L, request);
@@ -94,7 +94,7 @@ class ProductionServiceTest {
     void updateStatus_enEjecucionToCerrado_success() {
         production.setStatus(ProductionStatus.EN_EJECUCION);
         when(repository.findById(1L)).thenReturn(Optional.of(production));
-        when(repository.save(any(Production.class))).thenAnswer(i -> i.getArguments()[0]);
+        when(repository.saveAndFlush(any(Production.class))).thenAnswer(i -> i.getArguments()[0]);
 
         ProductionStatusUpdateDTO request = new ProductionStatusUpdateDTO(ProductionStatus.CERRADO);
         var result = service.updateStatus(1L, request);
@@ -119,4 +119,3 @@ class ProductionServiceTest {
         assertThrows(InvalidTransitionException.class, () -> service.updateStatus(1L, request));
     }
 }
-

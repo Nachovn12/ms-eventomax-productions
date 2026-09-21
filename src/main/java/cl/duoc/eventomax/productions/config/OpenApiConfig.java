@@ -19,10 +19,10 @@ public class OpenApiConfig {
                 .info(new Info()
                         .title("EventoMax Productions API")
                         .version("1.0")
-                        .description("Microservicio de dominio de EventoMax responsable de la gestión de eventos y producciones.")
+                        .description("Microservicio interno de producciones. En cloud, acceder mediante API Gateway y BFF; "
+                                + "la validación JWT y la autorización se realizan en esas capas.")
                         .contact(new Contact()
-                                .name("Equipo EventoMax")
-                                .email("soporte@eventomax.com")))
+                                .name("Equipo EventoMax")))
                 .components(new Components()
                         .addSecuritySchemes("bearerAuth", new SecurityScheme()
                                 .type(SecurityScheme.Type.HTTP)

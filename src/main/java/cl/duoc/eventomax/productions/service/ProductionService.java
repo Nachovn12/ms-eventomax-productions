@@ -68,6 +68,10 @@ public class ProductionService {
     public List<ProductionResponseDTO> getFilteredProductions(
             String statusStr, LocalDateTime from, LocalDateTime to) {
 
+        if (from != null && to != null && from.isAfter(to)) {
+            throw new IllegalArgumentException("La fecha desde no puede ser posterior a la fecha hasta");
+        }
+
         ProductionStatus status = null;
         if (statusStr != null && !statusStr.isBlank()) {
             try {
@@ -95,7 +99,7 @@ public class ProductionService {
         validateTransition(production.getStatus(), request.status());
 
         production.setStatus(request.status());
-        Production updated = repository.save(production);
+        Production updated = repository.saveAndFlush(production);
 
         return toResponseDTO(updated);
     }
@@ -157,4 +161,3 @@ public class ProductionService {
         );
     }
 }
-
