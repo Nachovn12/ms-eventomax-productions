@@ -23,6 +23,9 @@ class ProductionServiceTest {
     @Mock
     private ProductionRepository repository;
 
+    @Mock
+    private org.springframework.context.ApplicationEventPublisher eventPublisher;
+
     @InjectMocks
     private ProductionService service;
 
@@ -41,6 +44,7 @@ class ProductionServiceTest {
 
         ProductionStatusUpdateDTO request = new ProductionStatusUpdateDTO(ProductionStatus.CONFIRMADO);
         assertThrows(ResourceNotFoundException.class, () -> service.updateStatus(99L, request));
+        org.mockito.Mockito.verifyNoInteractions(eventPublisher);
     }
 
     // L. transición SOLICITADO → CONFIRMADO
@@ -53,6 +57,7 @@ class ProductionServiceTest {
         ProductionStatusUpdateDTO request = new ProductionStatusUpdateDTO(ProductionStatus.CONFIRMADO);
         var result = service.updateStatus(1L, request);
         assertEquals("CONFIRMADO", result.status());
+        org.mockito.Mockito.verify(eventPublisher).publishEvent(any(cl.duoc.eventomax.productions.event.ProductionStatusChangedEvent.class));
     }
 
     // M. transición CONFIRMADO → EN_MONTAJE
@@ -65,6 +70,7 @@ class ProductionServiceTest {
         ProductionStatusUpdateDTO request = new ProductionStatusUpdateDTO(ProductionStatus.EN_MONTAJE);
         var result = service.updateStatus(1L, request);
         assertEquals("EN_MONTAJE", result.status());
+        org.mockito.Mockito.verify(eventPublisher).publishEvent(any(cl.duoc.eventomax.productions.event.ProductionStatusChangedEvent.class));
     }
 
     // N. rechazo SOLICITADO → EN_MONTAJE
@@ -75,6 +81,7 @@ class ProductionServiceTest {
 
         ProductionStatusUpdateDTO request = new ProductionStatusUpdateDTO(ProductionStatus.EN_MONTAJE);
         assertThrows(InvalidTransitionException.class, () -> service.updateStatus(1L, request));
+        org.mockito.Mockito.verifyNoInteractions(eventPublisher);
     }
 
     // O. transición EN_MONTAJE → EN_EJECUCIÓN
@@ -87,6 +94,7 @@ class ProductionServiceTest {
         ProductionStatusUpdateDTO request = new ProductionStatusUpdateDTO(ProductionStatus.EN_EJECUCION);
         var result = service.updateStatus(1L, request);
         assertEquals("EN_EJECUCION", result.status());
+        org.mockito.Mockito.verify(eventPublisher).publishEvent(any(cl.duoc.eventomax.productions.event.ProductionStatusChangedEvent.class));
     }
 
     // P. transición EN_EJECUCIÓN → CERRADO
@@ -99,6 +107,7 @@ class ProductionServiceTest {
         ProductionStatusUpdateDTO request = new ProductionStatusUpdateDTO(ProductionStatus.CERRADO);
         var result = service.updateStatus(1L, request);
         assertEquals("CERRADO", result.status());
+        org.mockito.Mockito.verify(eventPublisher).publishEvent(any(cl.duoc.eventomax.productions.event.ProductionStatusChangedEvent.class));
     }
 
     @Test
@@ -108,6 +117,7 @@ class ProductionServiceTest {
 
         ProductionStatusUpdateDTO request = new ProductionStatusUpdateDTO(ProductionStatus.CANCELADO);
         assertThrows(InvalidTransitionException.class, () -> service.updateStatus(1L, request));
+        org.mockito.Mockito.verifyNoInteractions(eventPublisher);
     }
 
     @Test
@@ -117,5 +127,6 @@ class ProductionServiceTest {
 
         ProductionStatusUpdateDTO request = new ProductionStatusUpdateDTO(ProductionStatus.CONFIRMADO);
         assertThrows(InvalidTransitionException.class, () -> service.updateStatus(1L, request));
+        org.mockito.Mockito.verifyNoInteractions(eventPublisher);
     }
 }

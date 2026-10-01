@@ -13,8 +13,21 @@ spring:
   flyway:
     enabled: true
 
+  rabbitmq:
+    host: ${RABBITMQ_HOST:localhost}
+    port: ${RABBITMQ_PORT:5672}
+    username: ${RABBITMQ_USERNAME:eventomax}
+    password: ${RABBITMQ_PASSWORD:}
+
 management:
   endpoints:
     web:
       exposure:
         include: health,info
+
+eventomax:
+  messaging:
+    rabbitmq:
+      exchange: cmd.direct
+      routing-key:
+        email: email.send
