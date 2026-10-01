@@ -7,6 +7,7 @@ import cl.duoc.eventomax.productions.model.Production;
 import cl.duoc.eventomax.productions.model.ProductionStatus;
 import cl.duoc.eventomax.productions.repository.ProductionRepository;
 
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -16,16 +17,18 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.time.LocalDateTime;
+import cl.duoc.eventomax.productions.event.ProductionStatusChangedEvent;
 
 @Service
 public class ProductionService {
 
     private final ProductionRepository repository;
+    private final ApplicationEventPublisher eventPublisher;
 
-    public ProductionService(ProductionRepository repository) {
+    public ProductionService(ProductionRepository repository, ApplicationEventPublisher eventPublisher) {
         this.repository = repository;
+        this.eventPublisher = eventPublisher;
     }
-
 
     @Transactional
     public ProductionResponseDTO createProduction(ProductionRequestDTO request) {
@@ -96,10 +99,22 @@ public class ProductionService {
                 .orElseThrow(() -> new ResourceNotFoundException(
                         "Produccion no encontrada con id: " + id));
 
-        validateTransition(production.getStatus(), request.status());
+        ProductionStatus previousStatus = production.getStatus();
+        validateTransition(previousStatus, request.status());
 
         production.setStatus(request.status());
         Production updated = repository.saveAndFlush(production);
+
+        eventPublisher.publishEvent(new ProductionStatusChangedEvent(
+                updated.getId(),
+                updated.getOrganizerId(),
+                updated.getName(),
+                previousStatus,
+                updated.getStatus(),
+                updated.getScheduledAt(),
+                updated.getLocation(),
+                java.time.Instant.now()
+        ));
 
         return toResponseDTO(updated);
     }
