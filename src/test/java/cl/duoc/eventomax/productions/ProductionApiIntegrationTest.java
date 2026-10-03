@@ -1,5 +1,6 @@
 package cl.duoc.eventomax.productions;
 
+import cl.duoc.eventomax.productions.integration.catalog.CatalogClient;
 import cl.duoc.eventomax.productions.model.Production;
 import cl.duoc.eventomax.productions.model.ProductionStatus;
 import cl.duoc.eventomax.productions.repository.ProductionRepository;
@@ -17,6 +18,7 @@ import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -33,6 +35,9 @@ class ProductionApiIntegrationTest {
     @Autowired ProductionRepository repository;
     @Autowired JdbcTemplate jdbc;
 
+    @MockitoBean
+    CatalogClient catalogClient;
+
     @BeforeEach
     void clearProductions() {
         repository.deleteAll();
@@ -48,7 +53,7 @@ class ProductionApiIntegrationTest {
                 LocalDateTime.of(2000, 1, 1, 0, 0), id);
 
         String updated = mvc.perform(put("/api/productions/{id}/status", id)
-                        .contentType(MediaType.APPLICATION_JSON).content("{\"status\":\"CONFIRMADO\"}"))
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"status\":\"CONFIRMADO\", \"items\": [{\"equipmentId\": 1, \"quantity\": 2}]}"))
                 .andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
         LocalDateTime persisted = timestamp(id, "updated_at");
         assertThat(persisted).isAfter(LocalDateTime.of(2000, 1, 1, 0, 0));

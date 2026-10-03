@@ -26,6 +26,9 @@ management:
         include: health,info
 
 eventomax:
+  clients:
+    catalog:
+      base-url: ${CATALOG_BASE_URL:http://localhost:8081}
   messaging:
     rabbitmq:
       exchange: cmd.direct

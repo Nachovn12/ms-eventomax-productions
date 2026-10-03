@@ -158,6 +158,38 @@ public class GlobalExceptionHandler {
                         "message", "HTTP method not supported for this endpoint"));
     }
 
+    @ExceptionHandler(cl.duoc.eventomax.productions.integration.catalog.exception.InventoryReservationException.class)
+    public ResponseEntity<Map<String, Object>> handleInventoryReservationException(
+            cl.duoc.eventomax.productions.integration.catalog.exception.InventoryReservationException ex) {
+
+        Map<String, Object> response = Map.of(
+                "timestamp", LocalDateTime.now(),
+                "status", 409,
+                "error", "Conflict",
+                "message", ex.getMessage()
+        );
+
+        return ResponseEntity
+                .status(HttpStatus.CONFLICT)
+                .body(response);
+    }
+
+    @ExceptionHandler(cl.duoc.eventomax.productions.integration.catalog.exception.CatalogUnavailableException.class)
+    public ResponseEntity<Map<String, Object>> handleCatalogUnavailableException(
+            cl.duoc.eventomax.productions.integration.catalog.exception.CatalogUnavailableException ex) {
+
+        Map<String, Object> response = Map.of(
+                "timestamp", LocalDateTime.now(),
+                "status", 503,
+                "error", "Service Unavailable",
+                "message", ex.getMessage()
+        );
+
+        return ResponseEntity
+                .status(HttpStatus.SERVICE_UNAVAILABLE)
+                .body(response);
+    }
+
     @ExceptionHandler(Exception.class)
     public ResponseEntity<Map<String, Object>> handleException(Exception ex) {
         log.error("Unexpected error processing request", ex);
