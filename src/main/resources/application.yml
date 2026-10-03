@@ -34,3 +34,4 @@ eventomax:
       exchange: cmd.direct
       routing-key:
         email: email.send
+        crew: crew.ticket

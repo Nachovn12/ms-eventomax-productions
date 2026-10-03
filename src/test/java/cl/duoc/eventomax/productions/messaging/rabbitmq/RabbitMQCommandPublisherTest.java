@@ -31,11 +31,14 @@ class RabbitMQCommandPublisherTest {
     private ArgumentCaptor<MessageEnvelope<EmailProductionStatusPayload>> envelopeCaptor;
 
     @Captor
+    private ArgumentCaptor<MessageEnvelope<CrewTicketPayload>> crewEnvelopeCaptor;
+
+    @Captor
     private ArgumentCaptor<MessagePostProcessor> postProcessorCaptor;
 
     @BeforeEach
     void setUp() {
-        publisher = new RabbitMQCommandPublisher(rabbitTemplate, "cmd.direct", "email.send");
+        publisher = new RabbitMQCommandPublisher(rabbitTemplate, "cmd.direct", "email.send", "crew.ticket");
     }
 
     @Test
@@ -74,5 +77,43 @@ class RabbitMQCommandPublisherTest {
                 .convertAndSend(anyString(), anyString(), any(Object.class), any(MessagePostProcessor.class));
 
         assertDoesNotThrow(() -> publisher.publishEmailCommand(payload));
+    }
+
+    @Test
+    void publishCrewTicketCommand_success() {
+        CrewTicketPayload payload = new CrewTicketPayload(
+                10L, "Evento Crew", "2026-12-01T20:00", "Santiago", "EN_MONTAJE"
+        );
+
+        publisher.publishCrewTicketCommand(payload);
+
+        verify(rabbitTemplate, times(1)).convertAndSend(
+                eq("cmd.direct"), eq("crew.ticket"), crewEnvelopeCaptor.capture(), postProcessorCaptor.capture()
+        );
+
+        MessageEnvelope<CrewTicketPayload> envelope = crewEnvelopeCaptor.getValue();
+        assertEquals("GenerateCrewTicket", envelope.type());
+        assertNotNull(envelope.eventId());
+        assertNotNull(envelope.timestamp());
+        assertNotNull(envelope.traceId());
+        assertNotNull(envelope.correlationId());
+        assertEquals(payload, envelope.payload());
+
+        MessagePostProcessor mpp = postProcessorCaptor.getValue();
+        Message mockMessage = new Message(new byte[0]);
+        Message processedMessage = mpp.postProcessMessage(mockMessage);
+        assertEquals(MessageDeliveryMode.PERSISTENT, processedMessage.getMessageProperties().getDeliveryMode());
+    }
+
+    @Test
+    void publishCrewTicketCommand_handlesExceptionGracefully() {
+        CrewTicketPayload payload = new CrewTicketPayload(
+                10L, "Evento Crew", "2026-12-01T20:00", "Santiago", "EN_MONTAJE"
+        );
+
+        doThrow(new AmqpException("Broker down")).when(rabbitTemplate)
+                .convertAndSend(anyString(), anyString(), any(Object.class), any(MessagePostProcessor.class));
+
+        assertDoesNotThrow(() -> publisher.publishCrewTicketCommand(payload));
     }
 }

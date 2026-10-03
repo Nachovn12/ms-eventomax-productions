@@ -53,6 +53,15 @@ No se debe agregar Spring Security directamente a Productions. La seguridad JWT/
 
 *Nota: La integración avanzada con cuadrillas mediante RabbitMQ o Kafka, notificaciones, auditoría y reportería pertenecen a etapas posteriores del semestre, fuera del alcance inicial (EP1).*
 
+## Mensajería (RabbitMQ)
+
+El microservicio utiliza RabbitMQ para publicar comandos de forma asíncrona hacia otros microservicios:
+- **Email:** Publica el comando de envío de correo mediante el routing key `email.send` del exchange `cmd.direct`; la cola consumidora es `q.cmd.email`.
+- **Cuadrilla (Crew Ticket):** Publica el comando `GenerateCrewTicket` en el routing key `crew.ticket` del exchange `cmd.direct` cuando una producción entra en estado `EN_MONTAJE`.
+  - El consumidor de este comando es `ms-eventomax-notify`.
+  - El payload (Contrato V1) incluye: `productionId`, `productionName`, `scheduledAt`, `location`, `status`.
+  - La publicación ocurre en la fase `AFTER_COMMIT` para evitar mensajes fantasmas en caso de que la transacción a la base de datos falle.
+
 ## Persistencia
 
 El microservicio utilizará PostgreSQL mediante:
