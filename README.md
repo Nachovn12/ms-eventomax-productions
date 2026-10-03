@@ -244,21 +244,35 @@ docker compose down
 
 ## Preparación AWS (Producción)
 
-El microservicio está preparado para despliegue en la arquitectura EventoMax sobre AWS mediante el archivo `docker-compose.prod.yml`. Este archivo:
+El microservicio está preparado para despliegue en la arquitectura EventoMax sobre AWS mediante el archivo `docker-compose.prod.yml`.
+Productions requiere integración con:
+- Amazon RDS PostgreSQL
+- ms-eventomax-catalog (por red interna Docker)
+- RabbitMQ en AWS
 
-- contiene solamente Productions
-- no levanta PostgreSQL
-- consume `DB_URL`, `DB_USER`, `DB_PASSWORD`
-- usa la red externa `eventomax-net`
-- no publica el puerto 8080 al host
-- permite al BFF resolver internamente:
-
+Flujo arquitectónico:
 ```text
-http://ms-eventomax-productions:8080
+Angular
+→ API Gateway
+→ BFF
+→ Productions
+   ├─→ RDS PostgreSQL
+   ├─→ Catalog
+   └─→ RabbitMQ
+          └─→ Notify
 ```
 
-Las variables `DB_URL`, `DB_USER` y `DB_PASSWORD` serán inyectadas en la instancia EC2.
-El healthcheck Docker consulta `/actuator/health` dentro del contenedor.
+Aclaraciones para el despliegue en la nube:
+- Productions **NO debe ser público**.
+- Catalog se consume por red interna a través de `eventomax-net`.
+- RabbitMQ debe utilizar un host privado o estar configurado por variable de entorno.
+- El backend **no debe depender de localhost ni host.docker.internal en cloud**.
+
+Las siguientes variables son obligatorias y deben proveerse al entorno:
+- `DB_URL`, `DB_USER`, `DB_PASSWORD`
+- `CATALOG_BASE_URL`
+- `RABBITMQ_HOST`, `RABBITMQ_PORT`, `RABBITMQ_USERNAME`, `RABBITMQ_PASSWORD`
+
 El ALB/API Gateway accede al BFF; Productions no se registra como destino público.
 La demo oficial corre en AWS EC2 con RDS y no depende de un computador local.
 
