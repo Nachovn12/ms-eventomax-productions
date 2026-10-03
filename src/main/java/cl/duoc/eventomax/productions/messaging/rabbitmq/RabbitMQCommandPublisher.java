@@ -23,35 +23,28 @@ public class RabbitMQCommandPublisher {
     private final String exchange;
     private final String emailRoutingKey;
 
+    private final String crewRoutingKey;
+
     public RabbitMQCommandPublisher(
             RabbitTemplate rabbitTemplate,
             @Value("${eventomax.messaging.rabbitmq.exchange}") String exchange,
-            @Value("${eventomax.messaging.rabbitmq.routing-key.email}") String emailRoutingKey) {
+            @Value("${eventomax.messaging.rabbitmq.routing-key.email}") String emailRoutingKey,
+            @Value("${eventomax.messaging.rabbitmq.routing-key.crew}") String crewRoutingKey) {
         this.rabbitTemplate = rabbitTemplate;
         this.exchange = exchange;
         this.emailRoutingKey = emailRoutingKey;
+        this.crewRoutingKey = crewRoutingKey;
     }
 
     public void publishEmailCommand(EmailProductionStatusPayload payload) {
         String eventId = UUID.randomUUID().toString();
-        String timestamp = Instant.now().atOffset(ZoneOffset.UTC).format(DateTimeFormatter.ISO_INSTANT);
-
-        String traceId = MDC.get("traceId");
-        if (traceId == null || traceId.isBlank()) {
-            traceId = UUID.randomUUID().toString();
-        }
-
-        String correlationId = MDC.get("correlationId");
-        if (correlationId == null || correlationId.isBlank()) {
-            correlationId = UUID.randomUUID().toString();
-        }
 
         MessageEnvelope<EmailProductionStatusPayload> envelope = new MessageEnvelope<>(
                 "SendProductionStatusEmail",
                 eventId,
-                timestamp,
-                traceId,
-                correlationId,
+                getTimestamp(),
+                resolveTraceId(),
+                resolveCorrelationId(),
                 payload
         );
 
@@ -69,5 +62,47 @@ public class RabbitMQCommandPublisher {
                 e
             );
         }
+    }
+
+    public void publishCrewTicketCommand(CrewTicketPayload payload) {
+        String eventId = UUID.randomUUID().toString();
+
+        MessageEnvelope<CrewTicketPayload> envelope = new MessageEnvelope<>(
+                "GenerateCrewTicket",
+                eventId,
+                getTimestamp(),
+                resolveTraceId(),
+                resolveCorrelationId(),
+                payload
+        );
+
+        try {
+            rabbitTemplate.convertAndSend(exchange, crewRoutingKey, envelope, message -> {
+                message.getMessageProperties().setDeliveryMode(org.springframework.amqp.core.MessageDeliveryMode.PERSISTENT);
+                return message;
+            });
+            log.info("Published Crew Ticket Command for production {} with eventId {}", payload.productionId(), eventId);
+        } catch (AmqpException e) {
+            log.error(
+                "Failed to publish crew ticket command for production {} with eventId {}",
+                payload.productionId(),
+                eventId,
+                e
+            );
+        }
+    }
+
+    private String getTimestamp() {
+        return Instant.now().atOffset(ZoneOffset.UTC).format(DateTimeFormatter.ISO_INSTANT);
+    }
+
+    private String resolveTraceId() {
+        String traceId = MDC.get("traceId");
+        return (traceId == null || traceId.isBlank()) ? UUID.randomUUID().toString() : traceId;
+    }
+
+    private String resolveCorrelationId() {
+        String correlationId = MDC.get("correlationId");
+        return (correlationId == null || correlationId.isBlank()) ? UUID.randomUUID().toString() : correlationId;
     }
 }
