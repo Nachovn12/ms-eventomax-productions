@@ -17,6 +17,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.time.LocalDateTime;
+import cl.duoc.eventomax.productions.integration.catalog.CatalogClient;
 import cl.duoc.eventomax.productions.event.ProductionStatusChangedEvent;
 
 @Service
@@ -24,10 +25,12 @@ public class ProductionService {
 
     private final ProductionRepository repository;
     private final ApplicationEventPublisher eventPublisher;
+    private final CatalogClient catalogClient;
 
-    public ProductionService(ProductionRepository repository, ApplicationEventPublisher eventPublisher) {
+    public ProductionService(ProductionRepository repository, ApplicationEventPublisher eventPublisher, CatalogClient catalogClient) {
         this.repository = repository;
         this.eventPublisher = eventPublisher;
+        this.catalogClient = catalogClient;
     }
 
     @Transactional
@@ -101,6 +104,13 @@ public class ProductionService {
 
         ProductionStatus previousStatus = production.getStatus();
         validateTransition(previousStatus, request.status());
+
+        if (request.status() == ProductionStatus.CONFIRMADO) {
+            if (request.items() == null || request.items().isEmpty()) {
+                throw new IllegalArgumentException("Se requieren ítems de inventario para confirmar una producción");
+            }
+            catalogClient.reserveInventory(production.getId(), request.items());
+        }
 
         production.setStatus(request.status());
         Production updated = repository.saveAndFlush(production);
