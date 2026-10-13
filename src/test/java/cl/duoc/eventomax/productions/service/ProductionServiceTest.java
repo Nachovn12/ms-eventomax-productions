@@ -34,6 +34,9 @@ class ProductionServiceTest {
     @Mock
     private CatalogClient catalogClient;
 
+    @Mock
+    private cl.duoc.eventomax.productions.repository.OutboxEventRepository outboxEventRepository;
+
     @InjectMocks
     private ProductionService service;
 
@@ -47,10 +50,10 @@ class ProductionServiceTest {
 
     @Test
     void updateStatus_missingProduction_throwsResourceNotFoundException() {
-        when(repository.findById(99L)).thenReturn(Optional.empty());
+        when(repository.findForUpdate(99L)).thenReturn(Optional.empty());
 
         ProductionStatusUpdateDTO request = new ProductionStatusUpdateDTO(ProductionStatus.CONFIRMADO, List.of(new ProductionReservationItemDTO(1L, 2)));
-        assertThrows(ResourceNotFoundException.class, () -> service.updateStatus(99L, request));
+        assertThrows(ResourceNotFoundException.class, () -> service.updateStatus(99L, request, "test-actor"));
         verifyNoInteractions(eventPublisher);
         verifyNoInteractions(catalogClient);
     }
@@ -59,14 +62,14 @@ class ProductionServiceTest {
     @Test
     void updateStatus_solicitadoToConfirmado_withItems_success() {
         production.setStatus(ProductionStatus.SOLICITADO);
-        when(repository.findById(1L)).thenReturn(Optional.of(production));
+        when(repository.findForUpdate(1L)).thenReturn(Optional.of(production));
         when(repository.saveAndFlush(any(Production.class))).thenAnswer(i -> i.getArguments()[0]);
 
         ProductionStatusUpdateDTO request = new ProductionStatusUpdateDTO(
                 ProductionStatus.CONFIRMADO,
                 List.of(new ProductionReservationItemDTO(1L, 2))
         );
-        var result = service.updateStatus(1L, request);
+        var result = service.updateStatus(1L, request, "test-actor");
 
         assertEquals("CONFIRMADO", result.status());
         verify(catalogClient, times(1)).reserveInventory(eq(1L), anyList());
@@ -78,10 +81,10 @@ class ProductionServiceTest {
     @Test
     void updateStatus_solicitadoToConfirmado_withoutItems_throwsIllegalArgumentException() {
         production.setStatus(ProductionStatus.SOLICITADO);
-        when(repository.findById(1L)).thenReturn(Optional.of(production));
+        when(repository.findForUpdate(1L)).thenReturn(Optional.of(production));
 
         ProductionStatusUpdateDTO request = new ProductionStatusUpdateDTO(ProductionStatus.CONFIRMADO, null);
-        assertThrows(IllegalArgumentException.class, () -> service.updateStatus(1L, request));
+        assertThrows(IllegalArgumentException.class, () -> service.updateStatus(1L, request, "test-actor"));
 
         assertEquals(ProductionStatus.SOLICITADO, production.getStatus());
         verifyNoInteractions(catalogClient);
@@ -93,14 +96,14 @@ class ProductionServiceTest {
     @Test
     void updateStatus_solicitadoToConfirmado_catalogRejects_throwsInventoryReservationException() {
         production.setStatus(ProductionStatus.SOLICITADO);
-        when(repository.findById(1L)).thenReturn(Optional.of(production));
+        when(repository.findForUpdate(1L)).thenReturn(Optional.of(production));
 
         List<ProductionReservationItemDTO> items = List.of(new ProductionReservationItemDTO(1L, 2));
         doThrow(new InventoryReservationException("Rejected")).when(catalogClient).reserveInventory(1L, items);
 
         ProductionStatusUpdateDTO request = new ProductionStatusUpdateDTO(ProductionStatus.CONFIRMADO, items);
 
-        assertThrows(InventoryReservationException.class, () -> service.updateStatus(1L, request));
+        assertThrows(InventoryReservationException.class, () -> service.updateStatus(1L, request, "test-actor"));
 
         assertEquals(ProductionStatus.SOLICITADO, production.getStatus());
         verify(repository, never()).saveAndFlush(any());
@@ -111,14 +114,14 @@ class ProductionServiceTest {
     @Test
     void updateStatus_solicitadoToConfirmado_catalogUnavailable_throwsCatalogUnavailableException() {
         production.setStatus(ProductionStatus.SOLICITADO);
-        when(repository.findById(1L)).thenReturn(Optional.of(production));
+        when(repository.findForUpdate(1L)).thenReturn(Optional.of(production));
 
         List<ProductionReservationItemDTO> items = List.of(new ProductionReservationItemDTO(1L, 2));
         doThrow(new CatalogUnavailableException("Unavailable")).when(catalogClient).reserveInventory(1L, items);
 
         ProductionStatusUpdateDTO request = new ProductionStatusUpdateDTO(ProductionStatus.CONFIRMADO, items);
 
-        assertThrows(CatalogUnavailableException.class, () -> service.updateStatus(1L, request));
+        assertThrows(CatalogUnavailableException.class, () -> service.updateStatus(1L, request, "test-actor"));
 
         assertEquals(ProductionStatus.SOLICITADO, production.getStatus());
         verify(repository, never()).saveAndFlush(any());
@@ -129,11 +132,11 @@ class ProductionServiceTest {
     @Test
     void updateStatus_confirmadoToEnMontaje_success() {
         production.setStatus(ProductionStatus.CONFIRMADO);
-        when(repository.findById(1L)).thenReturn(Optional.of(production));
+        when(repository.findForUpdate(1L)).thenReturn(Optional.of(production));
         when(repository.saveAndFlush(any(Production.class))).thenAnswer(i -> i.getArguments()[0]);
 
         ProductionStatusUpdateDTO request = new ProductionStatusUpdateDTO(ProductionStatus.EN_MONTAJE);
-        var result = service.updateStatus(1L, request);
+        var result = service.updateStatus(1L, request, "test-actor");
 
         assertEquals("EN_MONTAJE", result.status());
         verifyNoInteractions(catalogClient);
@@ -144,10 +147,10 @@ class ProductionServiceTest {
     @Test
     void updateStatus_solicitadoToEnMontaje_throwsInvalidTransitionException() {
         production.setStatus(ProductionStatus.SOLICITADO);
-        when(repository.findById(1L)).thenReturn(Optional.of(production));
+        when(repository.findForUpdate(1L)).thenReturn(Optional.of(production));
 
         ProductionStatusUpdateDTO request = new ProductionStatusUpdateDTO(ProductionStatus.EN_MONTAJE);
-        assertThrows(InvalidTransitionException.class, () -> service.updateStatus(1L, request));
+        assertThrows(InvalidTransitionException.class, () -> service.updateStatus(1L, request, "test-actor"));
 
         verifyNoInteractions(catalogClient);
         verifyNoInteractions(eventPublisher);
@@ -156,11 +159,11 @@ class ProductionServiceTest {
     @Test
     void updateStatus_enMontajeToEnEjecucion_success() {
         production.setStatus(ProductionStatus.EN_MONTAJE);
-        when(repository.findById(1L)).thenReturn(Optional.of(production));
+        when(repository.findForUpdate(1L)).thenReturn(Optional.of(production));
         when(repository.saveAndFlush(any(Production.class))).thenAnswer(i -> i.getArguments()[0]);
 
         ProductionStatusUpdateDTO request = new ProductionStatusUpdateDTO(ProductionStatus.EN_EJECUCION);
-        var result = service.updateStatus(1L, request);
+        var result = service.updateStatus(1L, request, "test-actor");
         assertEquals("EN_EJECUCION", result.status());
         verify(eventPublisher).publishEvent(any(cl.duoc.eventomax.productions.event.ProductionStatusChangedEvent.class));
     }
@@ -168,11 +171,11 @@ class ProductionServiceTest {
     @Test
     void updateStatus_enEjecucionToCerrado_success() {
         production.setStatus(ProductionStatus.EN_EJECUCION);
-        when(repository.findById(1L)).thenReturn(Optional.of(production));
+        when(repository.findForUpdate(1L)).thenReturn(Optional.of(production));
         when(repository.saveAndFlush(any(Production.class))).thenAnswer(i -> i.getArguments()[0]);
 
         ProductionStatusUpdateDTO request = new ProductionStatusUpdateDTO(ProductionStatus.CERRADO);
-        var result = service.updateStatus(1L, request);
+        var result = service.updateStatus(1L, request, "test-actor");
         assertEquals("CERRADO", result.status());
         verify(eventPublisher).publishEvent(any(cl.duoc.eventomax.productions.event.ProductionStatusChangedEvent.class));
     }
@@ -180,20 +183,20 @@ class ProductionServiceTest {
     @Test
     void updateStatus_cerradoIsTerminal_throwsInvalidTransitionException() {
         production.setStatus(ProductionStatus.CERRADO);
-        when(repository.findById(1L)).thenReturn(Optional.of(production));
+        when(repository.findForUpdate(1L)).thenReturn(Optional.of(production));
 
         ProductionStatusUpdateDTO request = new ProductionStatusUpdateDTO(ProductionStatus.CANCELADO);
-        assertThrows(InvalidTransitionException.class, () -> service.updateStatus(1L, request));
+        assertThrows(InvalidTransitionException.class, () -> service.updateStatus(1L, request, "test-actor"));
         verifyNoInteractions(eventPublisher);
     }
 
     @Test
     void updateStatus_canceladoIsTerminal_throwsInvalidTransitionException() {
         production.setStatus(ProductionStatus.CANCELADO);
-        when(repository.findById(1L)).thenReturn(Optional.of(production));
+        when(repository.findForUpdate(1L)).thenReturn(Optional.of(production));
 
         ProductionStatusUpdateDTO request = new ProductionStatusUpdateDTO(ProductionStatus.CONFIRMADO);
-        assertThrows(InvalidTransitionException.class, () -> service.updateStatus(1L, request));
+        assertThrows(InvalidTransitionException.class, () -> service.updateStatus(1L, request, "test-actor"));
         verifyNoInteractions(eventPublisher);
     }
 }

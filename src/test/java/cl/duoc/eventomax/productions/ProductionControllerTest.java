@@ -25,7 +25,14 @@ import static org.mockito.BDDMockito.given;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
-@WebMvcTest
+import org.junit.jupiter.api.BeforeEach;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken;
+import org.springframework.security.oauth2.jwt.Jwt;
+
+@WebMvcTest(controllers = cl.duoc.eventomax.productions.controller.ProductionController.class)
+@org.springframework.context.annotation.Import(cl.duoc.eventomax.productions.security.SecurityConfig.class)
+@org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc(addFilters = false)
 class ProductionControllerTest {
 
     @Autowired
@@ -33,6 +40,18 @@ class ProductionControllerTest {
 
     @MockitoBean
     ProductionService service;
+
+    @MockitoBean
+    org.springframework.security.oauth2.jwt.JwtDecoder jwtDecoder;
+
+    @BeforeEach
+    void setupSecurity() {
+        Jwt jwt = Jwt.withTokenValue("token")
+                .header("alg", "none")
+                .claim("sub", "actor-123")
+                .build();
+        SecurityContextHolder.getContext().setAuthentication(new JwtAuthenticationToken(jwt));
+    }
 
     // ObjectMapper construido localmente para no depender del contexto @WebMvcTest
     private final ObjectMapper objectMapper =
@@ -136,7 +155,7 @@ class ProductionControllerTest {
                 LocalDateTime.of(2027, 6, 15, 18, 0),
                 "Santiago", "CONFIRMADO", now, now
         );
-        given(service.updateStatus(eq(1L), any())).willReturn(confirmed);
+        given(service.updateStatus(eq(1L), any(), any())).willReturn(confirmed);
 
         String body = objectMapper.writeValueAsString(
                 new ProductionStatusUpdateDTO(ProductionStatus.CONFIRMADO));
@@ -155,7 +174,7 @@ class ProductionControllerTest {
     @Test
     void updateStatus_missingProduction_returns404() throws Exception {
 
-        given(service.updateStatus(eq(99L), any()))
+        given(service.updateStatus(eq(99L), any(), any()))
                 .willThrow(new cl.duoc.eventomax.productions.service.ResourceNotFoundException("Producción no encontrada"));
 
         String body = objectMapper.writeValueAsString(
@@ -176,7 +195,7 @@ class ProductionControllerTest {
     @Test
     void updateStatus_invalidTransition_returns409() throws Exception {
 
-        given(service.updateStatus(eq(1L), any()))
+        given(service.updateStatus(eq(1L), any(), any()))
                 .willThrow(new InvalidTransitionException(
                         "Transicion invalida: SOLICITADO -> EN_MONTAJE. "
                         + "Transiciones permitidas desde SOLICITADO: [CONFIRMADO, CANCELADO]"));
@@ -320,7 +339,7 @@ class ProductionControllerTest {
                 LocalDateTime.of(2027, 3, 10, 19, 0),
                 "Santiago", "SOLICITADO", now, now
         );
-        given(service.createProduction(any())).willReturn(created);
+        given(service.createProduction(any(), any())).willReturn(created);
 
         String body = objectMapper.writeValueAsString(
                 new java.util.LinkedHashMap<>() {{

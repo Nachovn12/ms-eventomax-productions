@@ -13,6 +13,10 @@ import org.springframework.stereotype.Repository;
 @Repository
 public interface ProductionRepository extends JpaRepository<Production, Long>, JpaSpecificationExecutor<Production> {
 
+    @org.springframework.data.jpa.repository.Lock(jakarta.persistence.LockModeType.PESSIMISTIC_WRITE)
+    @org.springframework.data.jpa.repository.Query("select p from Production p where p.id = :id")
+    java.util.Optional<Production> findForUpdate(@org.springframework.data.repository.query.Param("id") Long id);
+
     default List<Production> findByFilters(ProductionStatus status, LocalDateTime from, LocalDateTime to) {
         // Bind only supplied filters: PostgreSQL cannot infer timestamp parameters in '? IS NULL'.
         return findAll((root, query, builder) -> {
