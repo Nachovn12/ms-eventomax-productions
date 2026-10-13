@@ -9,9 +9,9 @@
 ## 1. Especificación General y Semántica
 
 - **Protocolo y Serialización:** Apache Kafka, mensajes codificados en JSON (UTF-8).
-- **Semántica de Entrega:** *At-least-once*. El emisor implementa el patrón *Transactional Outbox* para garantizar que ningún evento confirmado en base de datos se pierda.
+- **Semántica de Entrega:** *At-least-once* eventual. El emisor implementa el patrón *Transactional Outbox* para garantizar persistencia atómica local (la entidad y el evento se confirman o revierten juntos) y entrega eventual al broker mediante sondeos programados, reintentos exponenciales y recuperación administrativa; el mecanismo no asegura entrega absoluta ante fallos permanentes o estados terminales no recuperados.
 - **Idempotencia:** Los consumidores **deben** deduplicar eventos utilizando el campo `eventId` (UUID v4) en sus respectivos modelos de lectura/auditoría (`processed_event`).
-- **Clave de Particionamiento (Partition Key):** `String.valueOf(payload.productionId)`. Garantiza que todos los eventos asociados al ciclo de vida de una misma producción se enruten a la misma partición física y se consuman en estricto orden cronológico.
+- **Clave de Particionamiento (Partition Key):** `String.valueOf(payload.productionId)`. Garantiza que todos los eventos asociados a una misma producción se enruten a la misma partición física de Kafka, preservando el orden FIFO a nivel de partición. Cabe destacar que la secuenciación causal por producción no depende únicamente de Kafka: se apoya en tres capas acopladas: (1) el orden de registro en base de datos (`(created_at, sequence_no)`), (2) el despacho serializado por agregado del Outbox Relay (que bloquea eventos posteriores ante predecesores en `PENDING`, `IN_PROGRESS` o `ERROR`), y (3) la confirmación síncrona de recepción (ACK del broker Kafka) antes de marcar el evento como `SENT`.
 - **Formato Temporal:** ISO-8601 en tiempo universal coordinado (UTC), representación estándar Java `Instant` (`YYYY-MM-DDTHH:mm:ss.sssZ`).
 
 ---
@@ -28,7 +28,7 @@ Todo mensaje publicado en `productions.events` utiliza el envelope estándar de 
 | `timestamp` | `Instant` | Sí | Marca temporal de emisión del evento en UTC. |
 | `traceId` | `String` | No | Identificador de trazabilidad distribuida propagado vía MDC / HTTP. |
 | `correlationId`| `String` | No | Identificador de correlación del flujo de negocio. |
-| `actor` | `String` | Sí | Identidad del emisor/usuario obtenida de la aserción JWT (`jwt.getSubject()`). Validado en Audit como no vacío. |
+| `actor` | `String` | Sí | Identificador de sujeto obtenido de la aserción JWT (`jwt.getSubject()`). Corresponde a una cadena opaca definida por el proveedor de identidad (claim `sub`); no garantiza formato de correo electrónico ni necesariamente estructura de UUID. Validado en Audit como no vacío. |
 | `payload` | `Object` | Sí | Objeto con los datos de dominio específicos del evento. |
 
 ---
@@ -58,7 +58,7 @@ Emitido atómicamente al registrarse una nueva producción en estado inicial `SO
   "timestamp": "2026-10-12T18:30:00.120Z",
   "traceId": "4bf92f3577b34da6a3ce929d0e0e4736",
   "correlationId": "00f067aa0ba902b7",
-  "actor": "usuario-organizador@eventomax.cl",
+  "actor": "usr-sub-org-91a2b3c4",
   "payload": {
     "productionId": 105,
     "organizerId": "org-duoc-01",
@@ -98,7 +98,7 @@ Emitido atómicamente cuando una producción realiza una transición de estado v
   "timestamp": "2026-10-12T18:35:10.500Z",
   "traceId": "9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d",
   "correlationId": "c0a80101-8b84-4f99-939c-05bfd73c622a",
-  "actor": "admin-operaciones@eventomax.cl",
+  "actor": "usr-sub-adm-4d5e6f7a",
   "payload": {
     "productionId": 105,
     "organizerId": "org-duoc-01",
