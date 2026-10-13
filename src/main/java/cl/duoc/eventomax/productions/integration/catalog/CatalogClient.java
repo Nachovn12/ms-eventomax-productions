@@ -32,6 +32,11 @@ public class CatalogClient {
             catalogRestClient.post()
                     .uri("/api/catalog/reservations")
                     .contentType(MediaType.APPLICATION_JSON)
+                    .headers(headers -> {
+                        var trace = cl.duoc.eventomax.productions.tracing.TraceContext.current();
+                        headers.set("X-Trace-Id", trace.traceId());
+                        headers.set("X-Correlation-Id", trace.correlationId());
+                    })
                     .body(request)
                     .retrieve()
                     .onStatus(HttpStatusCode::is4xxClientError, (req, res) -> {

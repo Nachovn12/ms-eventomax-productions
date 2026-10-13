@@ -1,0 +1,41 @@
+name: Productions CI
+
+on:
+  pull_request:
+    branches: [develop, main]
+  push:
+    branches: [develop]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Build & Verify (Java 25, PostgreSQL, Kafka Testcontainers)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 25 (Eclipse Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '25'
+          cache: 'maven'
+
+      - name: Run verification test suite
+        run: bash mvnw -B -ntp verify
+
+      - name: Build Docker container
+        run: docker build -t eventomax-productions:ci .
+
+      - name: Upload Surefire Test Reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: productions-test-reports
+          path: target/surefire-reports/
+

@@ -26,15 +26,24 @@ public class ProductionService {
     private final ProductionRepository repository;
     private final ApplicationEventPublisher eventPublisher;
     private final CatalogClient catalogClient;
+    private final cl.duoc.eventomax.productions.repository.OutboxEventRepository outboxEventRepository;
+    private final com.fasterxml.jackson.databind.ObjectMapper objectMapper;
 
-    public ProductionService(ProductionRepository repository, ApplicationEventPublisher eventPublisher, CatalogClient catalogClient) {
+    public ProductionService(ProductionRepository repository,
+                             ApplicationEventPublisher eventPublisher,
+                             CatalogClient catalogClient,
+                             cl.duoc.eventomax.productions.repository.OutboxEventRepository outboxEventRepository) {
         this.repository = repository;
         this.eventPublisher = eventPublisher;
         this.catalogClient = catalogClient;
+        this.outboxEventRepository = outboxEventRepository;
+        this.objectMapper = new com.fasterxml.jackson.databind.ObjectMapper()
+                .registerModule(new com.fasterxml.jackson.datatype.jsr310.JavaTimeModule())
+                .disable(com.fasterxml.jackson.databind.SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
     }
 
     @Transactional
-    public ProductionResponseDTO createProduction(ProductionRequestDTO request) {
+    public ProductionResponseDTO createProduction(ProductionRequestDTO request, String actor) {
 
         Production production = new Production();
 
@@ -45,6 +54,42 @@ public class ProductionService {
         production.setStatus(ProductionStatus.SOLICITADO);
 
         Production saved = repository.save(production);
+
+        try {
+            java.time.Instant now = java.time.Instant.now();
+            var trace = cl.duoc.eventomax.productions.tracing.TraceContext.current();
+            cl.duoc.eventomax.productions.event.ProductionCreatedEvent payload = new cl.duoc.eventomax.productions.event.ProductionCreatedEvent(
+                    saved.getId(),
+                    saved.getOrganizerId(),
+                    saved.getName(),
+                    saved.getStatus().name(),
+                    saved.getScheduledAt(),
+                    saved.getLocation(),
+                    now
+            );
+
+            cl.duoc.eventomax.productions.event.KafkaEventEnvelope<cl.duoc.eventomax.productions.event.ProductionCreatedEvent> envelope =
+                    new cl.duoc.eventomax.productions.event.KafkaEventEnvelope<>(
+                            java.util.UUID.randomUUID(),
+                            "ProductionCreated",
+                            now,
+                            trace.traceId(),
+                            trace.correlationId(),
+                            actor,
+                            payload
+                    );
+
+            String jsonPayload = objectMapper.writeValueAsString(envelope);
+            cl.duoc.eventomax.productions.model.OutboxEvent outboxEvent = new cl.duoc.eventomax.productions.model.OutboxEvent(
+                    "Production",
+                    String.valueOf(saved.getId()),
+                    "ProductionCreated",
+                    jsonPayload
+            );
+            outboxEventRepository.save(outboxEvent);
+        } catch (Exception e) {
+            throw new RuntimeException("Error al guardar evento en outbox", e);
+        }
 
         return toResponseDTO(saved);
     }
@@ -96,9 +141,9 @@ public class ProductionService {
 
 
     @Transactional
-    public ProductionResponseDTO updateStatus(Long id, ProductionStatusUpdateDTO request) {
+    public ProductionResponseDTO updateStatus(Long id, ProductionStatusUpdateDTO request, String actor) {
 
-        Production production = repository.findById(id)
+        Production production = repository.findForUpdate(id)
                 .orElseThrow(() -> new ResourceNotFoundException(
                         "Produccion no encontrada con id: " + id));
 
@@ -115,7 +160,9 @@ public class ProductionService {
         production.setStatus(request.status());
         Production updated = repository.saveAndFlush(production);
 
-        eventPublisher.publishEvent(new ProductionStatusChangedEvent(
+        java.time.Instant now = java.time.Instant.now();
+        var trace = cl.duoc.eventomax.productions.tracing.TraceContext.current();
+        ProductionStatusChangedEvent statusEvent = new ProductionStatusChangedEvent(
                 updated.getId(),
                 updated.getOrganizerId(),
                 updated.getName(),
@@ -123,8 +170,33 @@ public class ProductionService {
                 updated.getStatus(),
                 updated.getScheduledAt(),
                 updated.getLocation(),
-                java.time.Instant.now()
-        ));
+                now
+        );
+        eventPublisher.publishEvent(statusEvent);
+
+        try {
+            cl.duoc.eventomax.productions.event.KafkaEventEnvelope<ProductionStatusChangedEvent> envelope =
+                    new cl.duoc.eventomax.productions.event.KafkaEventEnvelope<>(
+                            java.util.UUID.randomUUID(),
+                            "ProductionStatusChanged",
+                            now,
+                            trace.traceId(),
+                            trace.correlationId(),
+                            actor,
+                            statusEvent
+                    );
+
+            String jsonPayload = objectMapper.writeValueAsString(envelope);
+            cl.duoc.eventomax.productions.model.OutboxEvent outboxEvent = new cl.duoc.eventomax.productions.model.OutboxEvent(
+                    "Production",
+                    String.valueOf(updated.getId()),
+                    "ProductionStatusChanged",
+                    jsonPayload
+            );
+            outboxEventRepository.save(outboxEvent);
+        } catch (Exception e) {
+            throw new RuntimeException("Error al guardar evento en outbox", e);
+        }
 
         return toResponseDTO(updated);
     }

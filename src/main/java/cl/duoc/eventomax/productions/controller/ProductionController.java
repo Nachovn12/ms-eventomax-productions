@@ -41,9 +41,14 @@ public class ProductionController {
     @ApiResponse(responseCode = "400", description = "Error de validación en los campos del request", content = @Content)
     @PostMapping
     public ResponseEntity<ProductionResponseDTO> create(
-            @Parameter(description = "Datos de la producción a crear") @Valid @RequestBody ProductionRequestDTO request) {
+            @Parameter(description = "Datos de la producción a crear") @Valid @RequestBody ProductionRequestDTO request,
+            @org.springframework.security.core.annotation.AuthenticationPrincipal org.springframework.security.oauth2.jwt.Jwt jwt) {
 
-        ProductionResponseDTO response = service.createProduction(request);
+        if (jwt == null || jwt.getSubject() == null || jwt.getSubject().isBlank()) {
+            throw new org.springframework.security.access.AccessDeniedException("Identidad requerida");
+        }
+        String actor = jwt.getSubject();
+        ProductionResponseDTO response = service.createProduction(request, actor);
 
         return ResponseEntity
                 .status(HttpStatus.CREATED)
@@ -96,9 +101,14 @@ public class ProductionController {
     @PutMapping("/{id}/status")
     public ResponseEntity<ProductionResponseDTO> updateStatus(
             @Parameter(description = "ID de la producción a actualizar") @PathVariable Long id,
-            @Parameter(description = "Objeto con el nuevo estado") @Valid @RequestBody ProductionStatusUpdateDTO request) {
+            @Parameter(description = "Objeto con el nuevo estado") @Valid @RequestBody ProductionStatusUpdateDTO request,
+            @org.springframework.security.core.annotation.AuthenticationPrincipal org.springframework.security.oauth2.jwt.Jwt jwt) {
 
-        ProductionResponseDTO updated = service.updateStatus(id, request);
+        if (jwt == null || jwt.getSubject() == null || jwt.getSubject().isBlank()) {
+            throw new org.springframework.security.access.AccessDeniedException("Identidad requerida");
+        }
+        String actor = jwt.getSubject();
+        ProductionResponseDTO updated = service.updateStatus(id, request, actor);
         return ResponseEntity.ok(updated);
 
     }
