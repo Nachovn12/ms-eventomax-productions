@@ -18,6 +18,9 @@ import java.util.Optional;
 import java.util.Set;
 import java.time.LocalDateTime;
 import cl.duoc.eventomax.productions.integration.catalog.CatalogClient;
+import cl.duoc.eventomax.productions.integration.catalog.dto.CatalogReservationResponseDTO;
+import cl.duoc.eventomax.productions.integration.catalog.exception.InventoryReservationException;
+import cl.duoc.eventomax.productions.model.InventoryReservationTask;
 import cl.duoc.eventomax.productions.event.ProductionStatusChangedEvent;
 
 @Service
@@ -27,16 +30,19 @@ public class ProductionService {
     private final ApplicationEventPublisher eventPublisher;
     private final CatalogClient catalogClient;
     private final cl.duoc.eventomax.productions.repository.OutboxEventRepository outboxEventRepository;
+    private final cl.duoc.eventomax.productions.repository.InventoryReservationTaskRepository inventoryReservationTaskRepository;
     private final com.fasterxml.jackson.databind.ObjectMapper objectMapper;
 
     public ProductionService(ProductionRepository repository,
                              ApplicationEventPublisher eventPublisher,
                              CatalogClient catalogClient,
-                             cl.duoc.eventomax.productions.repository.OutboxEventRepository outboxEventRepository) {
+                             cl.duoc.eventomax.productions.repository.OutboxEventRepository outboxEventRepository,
+                             cl.duoc.eventomax.productions.repository.InventoryReservationTaskRepository inventoryReservationTaskRepository) {
         this.repository = repository;
         this.eventPublisher = eventPublisher;
         this.catalogClient = catalogClient;
         this.outboxEventRepository = outboxEventRepository;
+        this.inventoryReservationTaskRepository = inventoryReservationTaskRepository;
         this.objectMapper = new com.fasterxml.jackson.databind.ObjectMapper()
                 .registerModule(new com.fasterxml.jackson.datatype.jsr310.JavaTimeModule())
                 .disable(com.fasterxml.jackson.databind.SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
@@ -154,27 +160,78 @@ public class ProductionService {
             if (request.items() == null || request.items().isEmpty()) {
                 throw new IllegalArgumentException("Se requieren ítems de inventario para confirmar una producción");
             }
-            catalogClient.reserveInventory(production.getId(), request.items());
+
+            String serializedItems;
+            try {
+                serializedItems = objectMapper.writeValueAsString(request.items());
+            } catch (Exception e) {
+                serializedItems = "[]";
+            }
+            final String itemsJson = serializedItems;
+
+            InventoryReservationTask task = inventoryReservationTaskRepository.findByProductionId(production.getId())
+                    .orElseGet(() -> new InventoryReservationTask(production.getId(), itemsJson, InventoryReservationTask.STATUS_PENDING));
+            task.setItemsJson(itemsJson);
+            task.setStatus(InventoryReservationTask.STATUS_PENDING);
+            inventoryReservationTaskRepository.save(task);
+
+            try {
+                catalogClient.reserveInventory(production.getId(), request.items());
+                task.setStatus(InventoryReservationTask.STATUS_CONFIRMED);
+                inventoryReservationTaskRepository.save(task);
+            } catch (InventoryReservationException e) {
+                task.setStatus(InventoryReservationTask.STATUS_FAILED);
+                task.setLastError(e.getMessage());
+                inventoryReservationTaskRepository.save(task);
+                throw e;
+            } catch (Exception e) {
+                try {
+                    List<CatalogReservationResponseDTO> reservations = catalogClient.getReservationsByProduction(production.getId());
+                    boolean hasActive = reservations != null && reservations.stream()
+                            .anyMatch(r -> "RESERVED".equalsIgnoreCase(r.status()));
+                    if (hasActive) {
+                        task.setStatus(InventoryReservationTask.STATUS_CONFIRMED);
+                        inventoryReservationTaskRepository.save(task);
+                    } else {
+                        task.setStatus(InventoryReservationTask.STATUS_FAILED);
+                        task.setLastError(e.getMessage());
+                        inventoryReservationTaskRepository.save(task);
+                        throw e;
+                    }
+                } catch (Exception checkEx) {
+                    task.setStatus(InventoryReservationTask.STATUS_COMPENSATING);
+                    task.setLastError(e.getMessage());
+                    inventoryReservationTaskRepository.save(task);
+                    try {
+                        catalogClient.compensateInventory(production.getId());
+                        task.setStatus(InventoryReservationTask.STATUS_COMPENSATED);
+                        inventoryReservationTaskRepository.save(task);
+                    } catch (Exception ignored) {
+                    }
+                    throw e;
+                }
+            }
         }
 
         production.setStatus(request.status());
-        Production updated = repository.saveAndFlush(production);
-
-        java.time.Instant now = java.time.Instant.now();
-        var trace = cl.duoc.eventomax.productions.tracing.TraceContext.current();
-        ProductionStatusChangedEvent statusEvent = new ProductionStatusChangedEvent(
-                updated.getId(),
-                updated.getOrganizerId(),
-                updated.getName(),
-                previousStatus,
-                updated.getStatus(),
-                updated.getScheduledAt(),
-                updated.getLocation(),
-                now
-        );
-        eventPublisher.publishEvent(statusEvent);
-
+        Production updated;
         try {
+            updated = repository.saveAndFlush(production);
+
+            java.time.Instant now = java.time.Instant.now();
+            var trace = cl.duoc.eventomax.productions.tracing.TraceContext.current();
+            ProductionStatusChangedEvent statusEvent = new ProductionStatusChangedEvent(
+                    updated.getId(),
+                    updated.getOrganizerId(),
+                    updated.getName(),
+                    previousStatus,
+                    updated.getStatus(),
+                    updated.getScheduledAt(),
+                    updated.getLocation(),
+                    now
+            );
+            eventPublisher.publishEvent(statusEvent);
+
             cl.duoc.eventomax.productions.event.KafkaEventEnvelope<ProductionStatusChangedEvent> envelope =
                     new cl.duoc.eventomax.productions.event.KafkaEventEnvelope<>(
                             java.util.UUID.randomUUID(),
@@ -195,7 +252,27 @@ public class ProductionService {
             );
             outboxEventRepository.save(outboxEvent);
         } catch (Exception e) {
-            throw new RuntimeException("Error al guardar evento en outbox", e);
+            if (request.status() == ProductionStatus.CONFIRMADO) {
+                try {
+                    catalogClient.compensateInventory(production.getId());
+                    inventoryReservationTaskRepository.findByProductionId(production.getId())
+                            .ifPresent(t -> {
+                                t.setStatus(InventoryReservationTask.STATUS_COMPENSATED);
+                                inventoryReservationTaskRepository.save(t);
+                            });
+                } catch (Exception compEx) {
+                    inventoryReservationTaskRepository.findByProductionId(production.getId())
+                            .ifPresent(t -> {
+                                t.setStatus(InventoryReservationTask.STATUS_COMPENSATING);
+                                t.setLastError(compEx.getMessage());
+                                inventoryReservationTaskRepository.save(t);
+                            });
+                }
+            }
+            if (e instanceof RuntimeException re) {
+                throw re;
+            }
+            throw new RuntimeException("Error al actualizar estado de produccion", e);
         }
 
         return toResponseDTO(updated);

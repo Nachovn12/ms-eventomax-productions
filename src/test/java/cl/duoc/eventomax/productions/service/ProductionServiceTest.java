@@ -37,6 +37,9 @@ class ProductionServiceTest {
     @Mock
     private cl.duoc.eventomax.productions.repository.OutboxEventRepository outboxEventRepository;
 
+    @Mock
+    private cl.duoc.eventomax.productions.repository.InventoryReservationTaskRepository inventoryReservationTaskRepository;
+
     @InjectMocks
     private ProductionService service;
 
@@ -198,5 +201,44 @@ class ProductionServiceTest {
         ProductionStatusUpdateDTO request = new ProductionStatusUpdateDTO(ProductionStatus.CONFIRMADO);
         assertThrows(InvalidTransitionException.class, () -> service.updateStatus(1L, request, "test-actor"));
         verifyNoInteractions(eventPublisher);
+    }
+
+    @Test
+    void updateStatus_solicitadoToConfirmado_catalogTimeout_recoveredViaInquiry_success() {
+        production.setStatus(ProductionStatus.SOLICITADO);
+        when(repository.findForUpdate(1L)).thenReturn(Optional.of(production));
+        when(repository.saveAndFlush(any(Production.class))).thenAnswer(i -> i.getArguments()[0]);
+
+        List<ProductionReservationItemDTO> items = List.of(new ProductionReservationItemDTO(1L, 2));
+        doThrow(new CatalogUnavailableException("Timeout calling catalog")).when(catalogClient).reserveInventory(1L, items);
+
+        when(catalogClient.getReservationsByProduction(1L)).thenReturn(List.of(
+                new cl.duoc.eventomax.productions.integration.catalog.dto.CatalogReservationResponseDTO(
+                        10L, 1L, "Audio System", 2, "RESERVED"
+                )
+        ));
+
+        ProductionStatusUpdateDTO request = new ProductionStatusUpdateDTO(ProductionStatus.CONFIRMADO, items);
+        var result = service.updateStatus(1L, request, "test-actor");
+
+        assertEquals("CONFIRMADO", result.status());
+        verify(catalogClient, times(1)).getReservationsByProduction(1L);
+        verify(repository, times(1)).saveAndFlush(production);
+        verify(eventPublisher, times(1)).publishEvent(any(cl.duoc.eventomax.productions.event.ProductionStatusChangedEvent.class));
+    }
+
+    @Test
+    void updateStatus_solicitadoToConfirmado_localFailureAfterReservation_triggersCompensation() {
+        production.setStatus(ProductionStatus.SOLICITADO);
+        when(repository.findForUpdate(1L)).thenReturn(Optional.of(production));
+        when(repository.saveAndFlush(any(Production.class))).thenThrow(new RuntimeException("Database error saving production"));
+
+        List<ProductionReservationItemDTO> items = List.of(new ProductionReservationItemDTO(1L, 2));
+        ProductionStatusUpdateDTO request = new ProductionStatusUpdateDTO(ProductionStatus.CONFIRMADO, items);
+
+        assertThrows(RuntimeException.class, () -> service.updateStatus(1L, request, "test-actor"));
+
+        verify(catalogClient, times(1)).reserveInventory(1L, items);
+        verify(catalogClient, times(1)).compensateInventory(1L);
     }
 }
