@@ -288,7 +288,9 @@ public class ProductionService {
 
         // 2. Compensación externa en Catalog post-commit con reintento seguro
         Optional<cl.duoc.eventomax.productions.model.InventoryReservationTask> taskOpt = taskService.getTaskByProductionId(id);
-        Long generation = taskOpt.map(t -> (t.getAttemptCount() != null && t.getAttemptCount() > 0) ? t.getAttemptCount().longValue() : null).orElse(null);
+        Long generation = taskOpt.map(t -> (t.getReservationGeneration() != null && t.getReservationGeneration() > 0)
+                ? t.getReservationGeneration()
+                : ((t.getAttemptCount() != null && t.getAttemptCount() > 0) ? t.getAttemptCount().longValue() : null)).orElse(null);
         try {
             if (generation != null) {
                 catalogClient.compensateInventory(id, generation);

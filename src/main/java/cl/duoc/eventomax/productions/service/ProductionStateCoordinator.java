@@ -89,7 +89,7 @@ public class ProductionStateCoordinator {
                 if (taskService.areItemsCompatible(task.getItemsJson(), itemsJson)
                         && !InventoryReservationTask.STATUS_COMPENSATING.equals(task.getStatus())
                         && !InventoryReservationTask.STATUS_COMPENSATED.equals(task.getStatus())) {
-                    Long gen = task.getAttemptCount() != null ? task.getAttemptCount().longValue() : null;
+                    Long gen = task.getReservationGeneration() != null ? task.getReservationGeneration() : 1L;
                     return new ConfirmationClaim(true, gen, production);
                 }
             }
@@ -101,17 +101,21 @@ public class ProductionStateCoordinator {
         Optional<InventoryReservationTask> existingTaskOpt = taskService.getTaskByProductionId(id);
         if (existingTaskOpt.isPresent()) {
             InventoryReservationTask existing = existingTaskOpt.get();
-            if (InventoryReservationTask.STATUS_PROCESSING.equals(existing.getStatus())
-                    && taskService.areItemsCompatible(existing.getItemsJson(), itemsJson)) {
-                Long gen = (existing.getAttemptCount() != null && existing.getAttemptCount() > 0)
-                        ? existing.getAttemptCount().longValue() : 1L;
-                return new ConfirmationClaim(false, gen, production);
+            if (InventoryReservationTask.STATUS_PROCESSING.equals(existing.getStatus())) {
+                if (taskService.areItemsCompatible(existing.getItemsJson(), itemsJson)) {
+                    Long gen = (existing.getReservationGeneration() != null && existing.getReservationGeneration() > 0)
+                            ? existing.getReservationGeneration() : 1L;
+                    return new ConfirmationClaim(false, gen, production);
+                } else {
+                    throw new InvalidTransitionException(
+                            "Una confirmacion con diferente equipamiento ya se encuentra en procesamiento para la produccion " + id);
+                }
             }
         }
 
         InventoryReservationTask task = taskService.initOrUpdateIntent(id, itemsJson);
-        Long generation = (task != null && task.getAttemptCount() != null && task.getAttemptCount() > 0)
-                ? task.getAttemptCount().longValue() : null;
+        Long generation = (task != null && task.getReservationGeneration() != null && task.getReservationGeneration() > 0)
+                ? task.getReservationGeneration() : 1L;
         return new ConfirmationClaim(false, generation, production);
     }
 
@@ -185,7 +189,9 @@ public class ProductionStateCoordinator {
         Optional<InventoryReservationTask> taskOpt = taskService.getTaskByProductionId(id);
         if (taskOpt.isPresent()) {
             InventoryReservationTask task = taskOpt.get();
-            if (generation != null && task.getAttemptCount() != null && task.getAttemptCount() > generation) {
+            Long currentGen = task.getReservationGeneration() != null ? task.getReservationGeneration()
+                    : (task.getAttemptCount() != null ? task.getAttemptCount().longValue() : null);
+            if (generation != null && currentGen != null && currentGen > generation) {
                 return false;
             }
             if (InventoryReservationTask.STATUS_COMPENSATED.equals(task.getStatus())) {

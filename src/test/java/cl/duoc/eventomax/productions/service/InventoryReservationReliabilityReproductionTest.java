@@ -67,6 +67,12 @@ class InventoryReservationReliabilityReproductionTest {
     }
 
     @Autowired
+
+    org.springframework.jdbc.core.JdbcTemplate jdbcTemplate;
+
+
+
+    @Autowired
     ProductionService productionService;
 
     @Autowired
@@ -155,7 +161,8 @@ class InventoryReservationReliabilityReproductionTest {
         InventoryReservationTask initialTask = new InventoryReservationTask(p.getId(), "[{\"equipmentId\":1,\"quantity\":2}]", InventoryReservationTask.STATUS_CONFIRMED);
         taskRepository.saveAndFlush(initialTask);
 
-        doNothing().when(catalogClient).compensateInventory(p.getId());
+        lenient().doNothing().when(catalogClient).compensateInventory(eq(p.getId()), any());
+        lenient().doNothing().when(catalogClient).compensateInventory(p.getId());
 
         // El usuario cancela la producción
         productionService.updateStatus(p.getId(), new ProductionStatusUpdateDTO(
@@ -168,7 +175,7 @@ class InventoryReservationReliabilityReproductionTest {
         assertEquals(ProductionStatus.CANCELADO, current.getStatus());
 
         // 2. Verificamos compensación en Catalog invocada
-        verify(catalogClient, times(1)).compensateInventory(p.getId());
+        verify(catalogClient, times(1)).compensateInventory(eq(p.getId()), any());
 
         // 3. Verificamos que la tarea terminó en COMPENSATED
         InventoryReservationTask task = taskRepository.findByProductionId(p.getId()).orElseThrow();
@@ -194,7 +201,8 @@ class InventoryReservationReliabilityReproductionTest {
         when(catalogClient.getReservationsByProduction(p.getId())).thenReturn(List.of(
                 new CatalogReservationResponseDTO(1L, 1L, "Audio", 2, "RESERVED")
         ));
-        doNothing().when(catalogClient).compensateInventory(p.getId());
+        lenient().doNothing().when(catalogClient).compensateInventory(eq(p.getId()), any());
+        lenient().doNothing().when(catalogClient).compensateInventory(p.getId());
 
         int threads = 2;
         ExecutorService executor = Executors.newFixedThreadPool(threads);
@@ -224,7 +232,7 @@ class InventoryReservationReliabilityReproductionTest {
         assertTrue(executor.awaitTermination(10, TimeUnit.SECONDS));
 
         assertEquals(1, claimSuccesses.get(), "Exactamente uno de los dos workers debe ganar el reclamo atómico");
-        verify(catalogClient, times(1)).compensateInventory(p.getId());
+        verify(catalogClient, times(1)).compensateInventory(eq(p.getId()), any());
     }
 
     @Test
@@ -238,10 +246,12 @@ class InventoryReservationReliabilityReproductionTest {
         when(catalogClient.getReservationsByProduction(p.getId())).thenReturn(List.of(
                 new CatalogReservationResponseDTO(1L, 1L, "Audio", 2, "RESERVED")
         ));
+        lenient().doNothing().when(catalogClient).compensateInventory(eq(p.getId()), any());
+        lenient().doNothing().when(catalogClient).compensateInventory(p.getId());
 
         recoveryWorker.processTaskRecovery(task);
 
-        verify(catalogClient, times(1)).compensateInventory(p.getId());
+        verify(catalogClient, times(1)).compensateInventory(eq(p.getId()), any());
         InventoryReservationTask updatedTask = taskRepository.findByProductionId(p.getId()).orElseThrow();
         assertEquals(InventoryReservationTask.STATUS_COMPENSATED, updatedTask.getStatus());
     }
@@ -261,13 +271,14 @@ class InventoryReservationReliabilityReproductionTest {
         when(catalogClient.getReservationsByProduction(p.getId())).thenReturn(List.of(
                 new CatalogReservationResponseDTO(1L, 1L, "Audio", 2, "RESERVED")
         ));
-        doNothing().when(catalogClient).compensateInventory(p.getId());
+        lenient().doNothing().when(catalogClient).compensateInventory(eq(p.getId()), any());
+        lenient().doNothing().when(catalogClient).compensateInventory(p.getId());
 
         boolean claimed = taskService.claimTaskForRecovery(task);
         assertTrue(claimed, "El worker debe poder reclamar la tarea PROCESSING con lease expirado");
         recoveryWorker.processTaskRecovery(task);
 
-        verify(catalogClient, times(1)).compensateInventory(p.getId());
+        verify(catalogClient, times(1)).compensateInventory(eq(p.getId()), any());
         InventoryReservationTask updatedTask = taskRepository.findByProductionId(p.getId()).orElseThrow();
         assertEquals(InventoryReservationTask.STATUS_COMPENSATED, updatedTask.getStatus());
     }
@@ -317,7 +328,8 @@ class InventoryReservationReliabilityReproductionTest {
         Production p = createProduction(ProductionStatus.SOLICITADO);
 
         doNothing().when(catalogClient).reserveInventory(eq(p.getId()), any());
-        doNothing().when(catalogClient).compensateInventory(p.getId());
+        lenient().doNothing().when(catalogClient).compensateInventory(eq(p.getId()), any());
+        lenient().doNothing().when(catalogClient).compensateInventory(p.getId());
 
         // Simulamos que antes de completeConfirmation, otra transacción canceló la producción
         p.setStatus(ProductionStatus.CANCELADO);
@@ -339,13 +351,14 @@ class InventoryReservationReliabilityReproductionTest {
         InventoryReservationTask task = new InventoryReservationTask(p.getId(), "[{\"equipmentId\":1,\"quantity\":2}]", InventoryReservationTask.STATUS_COMPENSATING);
         taskRepository.saveAndFlush(task);
 
-        doNothing().when(catalogClient).compensateInventory(p.getId());
+        lenient().doNothing().when(catalogClient).compensateInventory(eq(p.getId()), any());
+        lenient().doNothing().when(catalogClient).compensateInventory(p.getId());
 
         recoveryWorker.processTaskRecovery(task);
-        verify(catalogClient, times(1)).compensateInventory(p.getId());
+        verify(catalogClient, times(1)).compensateInventory(eq(p.getId()), any());
 
         recoveryWorker.processTaskRecovery(task);
-        verify(catalogClient, times(2)).compensateInventory(p.getId());
+        verify(catalogClient, times(2)).compensateInventory(eq(p.getId()), any());
 
         InventoryReservationTask finalTask = taskRepository.findByProductionId(p.getId()).orElseThrow();
         assertEquals(InventoryReservationTask.STATUS_COMPENSATED, finalTask.getStatus());
@@ -564,5 +577,115 @@ class InventoryReservationReliabilityReproductionTest {
                 () -> verify(catalogClient, never()).compensateInventory(eq(prodId), any()),
                 () -> verify(catalogClient, never()).compensateInventory(prodId)
         );
+    }
+
+    @Test
+    @DisplayName("13. Recovery worker real invocation (recoverStuckTasks): claimTask increment blocks compensation in buggy unseparated state")
+    void testRecoverStuckTasks_realInvocation_claimIncrementMustNotBlockCompensation() {
+        Production p = createProduction(ProductionStatus.SOLICITADO);
+        Long prodId = p.getId();
+
+        InventoryReservationTask task = taskService.initOrUpdateIntent(prodId, "[{\"equipmentId\":1,\"quantity\":2}]");
+        assertEquals(1, task.getAttemptCount());
+
+        jdbcTemplate.update("UPDATE inventory_reservation_tasks SET updated_at = NOW() - INTERVAL '30 seconds' WHERE id = ?", task.getId());
+
+        when(catalogClient.getReservationsByProduction(prodId)).thenReturn(List.of(
+                new CatalogReservationResponseDTO(1L, 1L, "Audio", 2, "RESERVED")
+        ));
+        lenient().doNothing().when(catalogClient).compensateInventory(eq(prodId), any());
+        lenient().doNothing().when(catalogClient).compensateInventory(prodId);
+
+        recoveryWorker.recoverStuckTasks();
+
+        verify(catalogClient, times(1)).compensateInventory(eq(prodId), any());
+        InventoryReservationTask finalTask = taskRepository.findByProductionId(prodId).orElseThrow();
+        assertEquals(InventoryReservationTask.STATUS_COMPENSATED, finalTask.getStatus());
+    }
+
+    @Test
+    @DisplayName("14. Confirmaciones simultaneas con equipamiento incompatible: solo una intencion gana, la perdedora es rechazada sin sobreescribir ni compensar")
+    void testConcurrentConfirmations_withIncompatibleItems_onlyOneWins_noOverwrite() throws Exception {
+        Production p = createProduction(ProductionStatus.SOLICITADO);
+        Long prodId = p.getId();
+
+        List<ProductionReservationItemDTO> itemsA = List.of(new ProductionReservationItemDTO(101L, 2));
+        List<ProductionReservationItemDTO> itemsB = List.of(new ProductionReservationItemDTO(202L, 5));
+
+        ProductionStatusUpdateDTO requestA = new ProductionStatusUpdateDTO(ProductionStatus.CONFIRMADO, itemsA);
+        ProductionStatusUpdateDTO requestB = new ProductionStatusUpdateDTO(ProductionStatus.CONFIRMADO, itemsB);
+
+        final Object catalogLock = new Object();
+        final AtomicReference<List<ProductionReservationItemDTO>> catalogReservedItems = new AtomicReference<>(null);
+        final CountDownLatch threadAInReserve = new CountDownLatch(1);
+        final CountDownLatch threadBFinished = new CountDownLatch(1);
+
+        org.mockito.stubbing.Answer<Void> answerReserve = invocation -> {
+            @SuppressWarnings("unchecked")
+            List<ProductionReservationItemDTO> requested = invocation.getArgument(1);
+            synchronized (catalogLock) {
+                if (catalogReservedItems.get() == null) {
+                    catalogReservedItems.set(List.copyOf(requested));
+                }
+            }
+            threadAInReserve.countDown();
+            assertTrue(threadBFinished.await(10, TimeUnit.SECONDS), "Timeout esperando a que B intente confirmar");
+            return null;
+        };
+
+        lenient().doAnswer(answerReserve).when(catalogClient).reserveInventory(eq(prodId), eq(itemsA), any());
+        lenient().doAnswer(answerReserve).when(catalogClient).reserveInventory(eq(prodId), eq(itemsA));
+
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        Future<ProductionResponseDTO> futureA = null;
+        Future<ProductionResponseDTO> futureB = null;
+
+        try {
+            futureA = executor.submit(() -> productionService.updateStatus(prodId, requestA, "actor-A"));
+
+            futureB = executor.submit(() -> {
+                try {
+                    assertTrue(threadAInReserve.await(10, TimeUnit.SECONDS), "Timeout esperando a que A cree la intencion");
+                    return productionService.updateStatus(prodId, requestB, "actor-B");
+                } finally {
+                    threadBFinished.countDown();
+                }
+            });
+
+            ProductionResponseDTO resA = futureA.get(15, TimeUnit.SECONDS);
+            assertEquals("CONFIRMADO", resA.status());
+
+            Throwable errB = null;
+            try {
+                futureB.get(15, TimeUnit.SECONDS);
+            } catch (ExecutionException ee) {
+                errB = ee.getCause();
+            }
+            assertNotNull(errB, "La solicitud concurrente B con items incompatibles debe ser rechazada");
+
+            Production dbProd = productionRepository.findById(prodId).orElseThrow();
+            assertEquals(ProductionStatus.CONFIRMADO, dbProd.getStatus());
+
+            InventoryReservationTask dbTask = taskRepository.findByProductionId(prodId).orElseThrow();
+            assertEquals(InventoryReservationTask.STATUS_CONFIRMED, dbTask.getStatus());
+            assertTrue(taskService.areItemsCompatible(dbTask.getItemsJson(), "[{\"equipmentId\":101,\"quantity\":2}]"),
+                    "Los items en BD deben pertenecer al ganador A y no haber sido sobreescritos por B");
+
+            assertEquals(itemsA, catalogReservedItems.get(), "Catalog debe almacenar exclusivamente los items ganadores de A");
+
+            long outboxCount = outboxEventRepository.findAll().stream()
+                    .filter(e -> String.valueOf(prodId).equals(e.getAggregateId())
+                            && "ProductionStatusChanged".equals(e.getEventType()))
+                    .count();
+            assertEquals(1L, outboxCount, "Outbox debe registrar exactamente 1 evento de transicion a CONFIRMADO");
+
+            verify(catalogClient, never()).compensateInventory(eq(prodId), any());
+            verify(catalogClient, never()).compensateInventory(prodId);
+        } finally {
+            threadAInReserve.countDown();
+            threadBFinished.countDown();
+            executor.shutdownNow();
+            executor.awaitTermination(5, TimeUnit.SECONDS);
+        }
     }
 }

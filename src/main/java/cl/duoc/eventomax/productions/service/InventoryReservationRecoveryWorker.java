@@ -51,7 +51,8 @@ public class InventoryReservationRecoveryWorker {
         for (InventoryReservationTask task : claimableTasks) {
             boolean claimed = taskService.claimTaskForRecovery(task);
             if (claimed) {
-                processTaskRecovery(task);
+                InventoryReservationTask freshTask = taskService.getTaskByProductionId(task.getProductionId()).orElse(task);
+                processTaskRecovery(freshTask);
             }
         }
     }
@@ -63,7 +64,9 @@ public class InventoryReservationRecoveryWorker {
             return;
         }
 
-        Long generation = (task.getAttemptCount() != null && task.getAttemptCount() > 0) ? task.getAttemptCount().longValue() : null;
+        Long generation = (task.getReservationGeneration() != null && task.getReservationGeneration() > 0)
+                ? task.getReservationGeneration()
+                : ((task.getAttemptCount() != null && task.getAttemptCount() > 0) ? task.getAttemptCount().longValue() : null);
 
         if (production.getStatus() == ProductionStatus.SOLICITADO) {
             try {

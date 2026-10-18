@@ -56,6 +56,14 @@ public class InventoryReservationTaskService {
     public InventoryReservationTask initOrUpdateIntent(Long productionId, String itemsJson) {
         InventoryReservationTask task = taskRepository.findByProductionId(productionId)
                 .orElseGet(() -> new InventoryReservationTask(productionId, itemsJson, InventoryReservationTask.STATUS_PENDING));
+        if (task.getId() != null) {
+            Long nextGen = task.getReservationGeneration() != null ? task.getReservationGeneration() + 1L : 1L;
+            task.setReservationGeneration(nextGen);
+        } else {
+            if (task.getReservationGeneration() == null) {
+                task.setReservationGeneration(1L);
+            }
+        }
         task.setItemsJson(itemsJson);
         task.setStatus(InventoryReservationTask.STATUS_PROCESSING);
         task.setAttemptCount(task.getAttemptCount() == null ? 1 : task.getAttemptCount() + 1);

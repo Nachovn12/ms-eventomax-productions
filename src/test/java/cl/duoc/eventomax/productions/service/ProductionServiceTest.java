@@ -88,7 +88,7 @@ class ProductionServiceTest {
         var result = service.updateStatus(1L, request, "test-actor");
 
         assertEquals("CONFIRMADO", result.status());
-        verify(catalogClient, times(1)).reserveInventory(eq(1L), anyList());
+        verify(catalogClient, times(1)).reserveInventory(eq(1L), anyList(), any());
         verify(repository, times(1)).saveAndFlush(production);
         verify(eventPublisher, times(1)).publishEvent(any(cl.duoc.eventomax.productions.event.ProductionStatusChangedEvent.class));
     }
@@ -115,7 +115,7 @@ class ProductionServiceTest {
         when(repository.findForUpdate(1L)).thenReturn(Optional.of(production));
 
         List<ProductionReservationItemDTO> items = List.of(new ProductionReservationItemDTO(1L, 2));
-        doThrow(new InventoryReservationException("Rejected")).when(catalogClient).reserveInventory(1L, items);
+        doThrow(new InventoryReservationException("Rejected")).when(catalogClient).reserveInventory(eq(1L), eq(items), any());
 
         ProductionStatusUpdateDTO request = new ProductionStatusUpdateDTO(ProductionStatus.CONFIRMADO, items);
 
@@ -133,7 +133,7 @@ class ProductionServiceTest {
         when(repository.findForUpdate(1L)).thenReturn(Optional.of(production));
 
         List<ProductionReservationItemDTO> items = List.of(new ProductionReservationItemDTO(1L, 2));
-        doThrow(new CatalogUnavailableException("Unavailable")).when(catalogClient).reserveInventory(1L, items);
+        doThrow(new CatalogUnavailableException("Unavailable")).when(catalogClient).reserveInventory(eq(1L), eq(items), any());
 
         ProductionStatusUpdateDTO request = new ProductionStatusUpdateDTO(ProductionStatus.CONFIRMADO, items);
 
@@ -251,7 +251,7 @@ class ProductionServiceTest {
 
         assertThrows(RuntimeException.class, () -> service.updateStatus(1L, request, "test-actor"));
 
-        verify(catalogClient, times(1)).reserveInventory(1L, items);
-        verify(catalogClient, times(1)).compensateInventory(1L);
+        verify(catalogClient, times(1)).reserveInventory(eq(1L), eq(items), any());
+        verify(catalogClient, times(1)).compensateInventory(eq(1L), any());
     }
 }

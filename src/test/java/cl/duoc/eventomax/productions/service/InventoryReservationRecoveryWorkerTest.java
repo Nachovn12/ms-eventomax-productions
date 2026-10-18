@@ -81,7 +81,7 @@ class InventoryReservationRecoveryWorkerTest {
 
         recoveryWorker.processTaskRecovery(task);
 
-        verify(catalogClient, times(1)).compensateInventory(100L);
+        verify(catalogClient, times(1)).compensateInventory(eq(100L), any());
         verify(taskService).markCompensated(100L);
     }
 
@@ -115,7 +115,7 @@ class InventoryReservationRecoveryWorkerTest {
 
         recoveryWorker.processTaskRecovery(task);
 
-        verify(catalogClient, times(1)).compensateInventory(100L);
+        verify(catalogClient, times(1)).compensateInventory(eq(100L), any());
         verify(taskService).markCompensated(100L);
     }
 }

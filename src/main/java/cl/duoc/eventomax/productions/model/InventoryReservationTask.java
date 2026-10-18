@@ -38,6 +38,9 @@ public class InventoryReservationTask {
     @Column(name = "attempt_count", nullable = false)
     private Integer attemptCount = 0;
 
+    @Column(name = "reservation_generation")
+    private Long reservationGeneration = 1L;
+
     @Column(name = "last_error", columnDefinition = "TEXT")
     private String lastError;
 
@@ -54,6 +57,7 @@ public class InventoryReservationTask {
         this.itemsJson = itemsJson;
         this.status = status;
         this.attemptCount = 0;
+        this.reservationGeneration = 1L;
     }
 
     @PrePersist
@@ -62,6 +66,9 @@ public class InventoryReservationTask {
         this.updatedAt = LocalDateTime.now();
         if (this.attemptCount == null) {
             this.attemptCount = 0;
+        }
+        if (this.reservationGeneration == null) {
+            this.reservationGeneration = 1L;
         }
     }
 
@@ -78,6 +85,8 @@ public class InventoryReservationTask {
     public void setItemsJson(String itemsJson) { this.itemsJson = itemsJson; }
     public Integer getAttemptCount() { return attemptCount; }
     public void setAttemptCount(Integer attemptCount) { this.attemptCount = attemptCount; }
+    public Long getReservationGeneration() { return reservationGeneration; }
+    public void setReservationGeneration(Long reservationGeneration) { this.reservationGeneration = reservationGeneration; }
     public String getLastError() { return lastError; }
     public void setLastError(String lastError) { this.lastError = lastError; }
     public LocalDateTime getCreatedAt() { return createdAt; }
