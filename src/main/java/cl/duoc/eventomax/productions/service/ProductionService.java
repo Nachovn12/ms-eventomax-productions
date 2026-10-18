@@ -1,45 +1,69 @@
 package cl.duoc.eventomax.productions.service;
 
 import cl.duoc.eventomax.productions.dto.ProductionRequestDTO;
+import cl.duoc.eventomax.productions.dto.ProductionReservationItemDTO;
 import cl.duoc.eventomax.productions.dto.ProductionResponseDTO;
 import cl.duoc.eventomax.productions.dto.ProductionStatusUpdateDTO;
+import cl.duoc.eventomax.productions.event.KafkaEventEnvelope;
+import cl.duoc.eventomax.productions.event.ProductionCreatedEvent;
+import cl.duoc.eventomax.productions.integration.catalog.CatalogClient;
+import cl.duoc.eventomax.productions.integration.catalog.dto.CatalogReservationResponseDTO;
+import cl.duoc.eventomax.productions.integration.catalog.exception.InventoryReservationException;
+import cl.duoc.eventomax.productions.model.OutboxEvent;
 import cl.duoc.eventomax.productions.model.Production;
 import cl.duoc.eventomax.productions.model.ProductionStatus;
+import cl.duoc.eventomax.productions.repository.InventoryReservationTaskRepository;
+import cl.duoc.eventomax.productions.repository.OutboxEventRepository;
 import cl.duoc.eventomax.productions.repository.ProductionRepository;
-
+import cl.duoc.eventomax.productions.tracing.TraceContext;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.SerializationFeature;
+import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.util.EnumSet;
-import java.util.List;
-import java.util.Map;
-import java.util.Optional;
-import java.util.Set;
+import java.time.Instant;
 import java.time.LocalDateTime;
-import cl.duoc.eventomax.productions.integration.catalog.CatalogClient;
-import cl.duoc.eventomax.productions.event.ProductionStatusChangedEvent;
+import java.util.Comparator;
+import java.util.List;
+import java.util.Optional;
+import java.util.UUID;
 
 @Service
 public class ProductionService {
 
+    private static final Logger log = LoggerFactory.getLogger(ProductionService.class);
+
     private final ProductionRepository repository;
     private final ApplicationEventPublisher eventPublisher;
     private final CatalogClient catalogClient;
-    private final cl.duoc.eventomax.productions.repository.OutboxEventRepository outboxEventRepository;
-    private final com.fasterxml.jackson.databind.ObjectMapper objectMapper;
+    private final OutboxEventRepository outboxEventRepository;
+    private final InventoryReservationTaskRepository inventoryReservationTaskRepository;
+    private final InventoryReservationTaskService taskService;
+    private final ProductionStateCoordinator stateCoordinator;
+    private final ObjectMapper objectMapper;
 
-    public ProductionService(ProductionRepository repository,
-                             ApplicationEventPublisher eventPublisher,
-                             CatalogClient catalogClient,
-                             cl.duoc.eventomax.productions.repository.OutboxEventRepository outboxEventRepository) {
+    public ProductionService(
+            ProductionRepository repository,
+            ApplicationEventPublisher eventPublisher,
+            CatalogClient catalogClient,
+            OutboxEventRepository outboxEventRepository,
+            InventoryReservationTaskRepository inventoryReservationTaskRepository,
+            InventoryReservationTaskService taskService,
+            ProductionStateCoordinator stateCoordinator) {
         this.repository = repository;
         this.eventPublisher = eventPublisher;
         this.catalogClient = catalogClient;
         this.outboxEventRepository = outboxEventRepository;
-        this.objectMapper = new com.fasterxml.jackson.databind.ObjectMapper()
-                .registerModule(new com.fasterxml.jackson.datatype.jsr310.JavaTimeModule())
-                .disable(com.fasterxml.jackson.databind.SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
+        this.inventoryReservationTaskRepository = inventoryReservationTaskRepository;
+        this.taskService = taskService;
+        this.stateCoordinator = stateCoordinator;
+        this.objectMapper = new ObjectMapper()
+                .registerModule(new JavaTimeModule())
+                .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
     }
 
     @Transactional
@@ -47,7 +71,11 @@ public class ProductionService {
 
         Production production = new Production();
 
-        production.setOrganizerId(request.organizerId());
+        String effectiveOrganizerId = (request.organizerId() != null && !request.organizerId().isBlank())
+                ? request.organizerId().trim()
+                : actor;
+
+        production.setOrganizerId(effectiveOrganizerId);
         production.setName(request.name());
         production.setScheduledAt(request.scheduledAt());
         production.setLocation(request.location());
@@ -56,9 +84,9 @@ public class ProductionService {
         Production saved = repository.save(production);
 
         try {
-            java.time.Instant now = java.time.Instant.now();
-            var trace = cl.duoc.eventomax.productions.tracing.TraceContext.current();
-            cl.duoc.eventomax.productions.event.ProductionCreatedEvent payload = new cl.duoc.eventomax.productions.event.ProductionCreatedEvent(
+            Instant now = Instant.now();
+            var trace = TraceContext.current();
+            ProductionCreatedEvent payload = new ProductionCreatedEvent(
                     saved.getId(),
                     saved.getOrganizerId(),
                     saved.getName(),
@@ -68,9 +96,9 @@ public class ProductionService {
                     now
             );
 
-            cl.duoc.eventomax.productions.event.KafkaEventEnvelope<cl.duoc.eventomax.productions.event.ProductionCreatedEvent> envelope =
-                    new cl.duoc.eventomax.productions.event.KafkaEventEnvelope<>(
-                            java.util.UUID.randomUUID(),
+            KafkaEventEnvelope<ProductionCreatedEvent> envelope =
+                    new KafkaEventEnvelope<>(
+                            UUID.randomUUID(),
                             "ProductionCreated",
                             now,
                             trace.traceId(),
@@ -80,7 +108,7 @@ public class ProductionService {
                     );
 
             String jsonPayload = objectMapper.writeValueAsString(envelope);
-            cl.duoc.eventomax.productions.model.OutboxEvent outboxEvent = new cl.duoc.eventomax.productions.model.OutboxEvent(
+            OutboxEvent outboxEvent = new OutboxEvent(
                     "Production",
                     String.valueOf(saved.getId()),
                     "ProductionCreated",
@@ -94,30 +122,37 @@ public class ProductionService {
         return toResponseDTO(saved);
     }
 
-
     @Transactional(readOnly = true)
     public Optional<ProductionResponseDTO> getProductionById(Long id) {
-
         return repository.findById(id)
                 .map(this::toResponseDTO);
-
     }
-
 
     @Transactional(readOnly = true)
     public List<ProductionResponseDTO> getAllProductions() {
-
         return repository.findAll()
                 .stream()
                 .map(this::toResponseDTO)
                 .toList();
-
     }
 
+    @Transactional(readOnly = true)
+    public List<ProductionResponseDTO> getAllProductionsForOwner(String ownerId) {
+        return repository.findByOrganizerId(ownerId)
+                .stream()
+                .map(this::toResponseDTO)
+                .toList();
+    }
 
     @Transactional(readOnly = true)
     public List<ProductionResponseDTO> getFilteredProductions(
             String statusStr, LocalDateTime from, LocalDateTime to) {
+        return getFilteredProductionsForOwner(statusStr, from, to, null);
+    }
+
+    @Transactional(readOnly = true)
+    public List<ProductionResponseDTO> getFilteredProductionsForOwner(
+            String statusStr, LocalDateTime from, LocalDateTime to, String ownerId) {
 
         if (from != null && to != null && from.isAfter(to)) {
             throw new IllegalArgumentException("La fecha desde no puede ser posterior a la fecha hasta");
@@ -132,120 +167,153 @@ public class ProductionService {
             }
         }
 
-        return repository.findByFilters(status, from, to)
+        return repository.findByFilters(status, from, to, ownerId)
                 .stream()
                 .map(this::toResponseDTO)
                 .toList();
-
     }
 
-
-    @Transactional
     public ProductionResponseDTO updateStatus(Long id, ProductionStatusUpdateDTO request, String actor) {
-
-        Production production = repository.findForUpdate(id)
-                .orElseThrow(() -> new ResourceNotFoundException(
-                        "Produccion no encontrada con id: " + id));
-
-        ProductionStatus previousStatus = production.getStatus();
-        validateTransition(previousStatus, request.status());
-
         if (request.status() == ProductionStatus.CONFIRMADO) {
-            if (request.items() == null || request.items().isEmpty()) {
-                throw new IllegalArgumentException("Se requieren ítems de inventario para confirmar una producción");
-            }
-            catalogClient.reserveInventory(production.getId(), request.items());
+            return handleConfirmation(id, request, actor);
+        } else if (request.status() == ProductionStatus.CANCELADO) {
+            return handleCancellation(id, actor);
+        } else {
+            return executeStandardStatusUpdate(id, request.status(), actor);
+        }
+    }
+
+    private ProductionResponseDTO handleConfirmation(Long id, ProductionStatusUpdateDTO request, String actor) {
+        if (request.items() == null || request.items().isEmpty()) {
+            stateCoordinator.validateCanConfirm(id);
+            throw new IllegalArgumentException("Se requieren ítems de inventario para confirmar una producción");
         }
 
-        production.setStatus(request.status());
-        Production updated = repository.saveAndFlush(production);
+        List<ProductionReservationItemDTO> sortedItems = request.items().stream()
+                .sorted(Comparator.comparing(ProductionReservationItemDTO::equipmentId))
+                .toList();
 
-        java.time.Instant now = java.time.Instant.now();
-        var trace = cl.duoc.eventomax.productions.tracing.TraceContext.current();
-        ProductionStatusChangedEvent statusEvent = new ProductionStatusChangedEvent(
-                updated.getId(),
-                updated.getOrganizerId(),
-                updated.getName(),
-                previousStatus,
-                updated.getStatus(),
-                updated.getScheduledAt(),
-                updated.getLocation(),
-                now
-        );
-        eventPublisher.publishEvent(statusEvent);
-
+        String itemsJson;
         try {
-            cl.duoc.eventomax.productions.event.KafkaEventEnvelope<ProductionStatusChangedEvent> envelope =
-                    new cl.duoc.eventomax.productions.event.KafkaEventEnvelope<>(
-                            java.util.UUID.randomUUID(),
-                            "ProductionStatusChanged",
-                            now,
-                            trace.traceId(),
-                            trace.correlationId(),
-                            actor,
-                            statusEvent
-                    );
-
-            String jsonPayload = objectMapper.writeValueAsString(envelope);
-            cl.duoc.eventomax.productions.model.OutboxEvent outboxEvent = new cl.duoc.eventomax.productions.model.OutboxEvent(
-                    "Production",
-                    String.valueOf(updated.getId()),
-                    "ProductionStatusChanged",
-                    jsonPayload
-            );
-            outboxEventRepository.save(outboxEvent);
+            itemsJson = objectMapper.writeValueAsString(sortedItems);
         } catch (Exception e) {
-            throw new RuntimeException("Error al guardar evento en outbox", e);
+            itemsJson = "[]";
         }
 
-        return toResponseDTO(updated);
+        // 1. Coordinar intención de confirmación de forma atómica durable (vía REQUIRES_NEW)
+        ProductionStateCoordinator.ConfirmationClaim claim = stateCoordinator.beginConfirmation(id, itemsJson);
+        if (claim.alreadyConfirmed()) {
+            return toResponseDTO(claim.production());
+        }
+
+        Long generation = claim.generation();
+
+        // 2. Llamada HTTP a Catalog (sin transacciones de BD ni locks abiertos)
+        try {
+            if (generation != null) {
+                catalogClient.reserveInventory(id, sortedItems, generation);
+            } else {
+                catalogClient.reserveInventory(id, sortedItems);
+            }
+        } catch (InventoryReservationException e) {
+            taskService.markFailed(id, e.getMessage());
+            throw e;
+        } catch (Exception e) {
+            // Reconciliación ante timeout o falla de red
+            try {
+                List<CatalogReservationResponseDTO> reservations = catalogClient.getReservationsByProduction(id);
+                boolean hasActive = reservations != null && reservations.stream()
+                        .anyMatch(r -> "RESERVED".equalsIgnoreCase(r.status()));
+                if (hasActive) {
+                    return completeConfirmationWithCompensationOnFailure(id, actor, generation);
+                } else {
+                    taskService.markFailed(id, e.getMessage());
+                    throw e;
+                }
+            } catch (Exception checkEx) {
+                if (stateCoordinator.tryBeginCompensation(id, generation, "Error de comunicación con Catalog: " + e.getMessage())) {
+                    try {
+                        if (generation != null) {
+                            catalogClient.compensateInventory(id, generation);
+                        } else {
+                            catalogClient.compensateInventory(id);
+                        }
+                        stateCoordinator.completeCompensation(id, generation);
+                    } catch (Exception ignored) {
+                    }
+                }
+                throw e;
+            }
+        }
+
+        // 3. Completar confirmación local en una nueva transacción vía stateCoordinator
+        return completeConfirmationWithCompensationOnFailure(id, actor, generation);
     }
 
-
-    // -------------------------------------------------------------------------
-    // Transitions
-    // -------------------------------------------------------------------------
-
-    /**
-     * Allowed transitions map.
-     * Key   = current status
-     * Value = set of statuses the current one can transition TO
-     *
-     * Main rule (README): EN_MONTAJE requires CONFIRMADO as previous state.
-     */
-    private static final Map<ProductionStatus, Set<ProductionStatus>> ALLOWED_TRANSITIONS =
-            Map.of(
-                    ProductionStatus.SOLICITADO,  EnumSet.of(ProductionStatus.CONFIRMADO,
-                                                             ProductionStatus.CANCELADO),
-                    ProductionStatus.CONFIRMADO,  EnumSet.of(ProductionStatus.EN_MONTAJE,
-                                                             ProductionStatus.CANCELADO),
-                    ProductionStatus.EN_MONTAJE,  EnumSet.of(ProductionStatus.EN_EJECUCION,
-                                                             ProductionStatus.CANCELADO),
-                    ProductionStatus.EN_EJECUCION, EnumSet.of(ProductionStatus.CERRADO,
-                                                              ProductionStatus.CANCELADO),
-                    ProductionStatus.CERRADO,     EnumSet.noneOf(ProductionStatus.class),
-                    ProductionStatus.CANCELADO,   EnumSet.noneOf(ProductionStatus.class)
-            );
-
-    private void validateTransition(ProductionStatus current, ProductionStatus next) {
-
-        Set<ProductionStatus> allowed = ALLOWED_TRANSITIONS.getOrDefault(
-                current, EnumSet.noneOf(ProductionStatus.class));
-
-        if (!allowed.contains(next)) {
-            throw new InvalidTransitionException(
-                    "Transicion invalida: " + current + " -> " + next
-                    + ". Transiciones permitidas desde " + current + ": " + allowed);
+    private ProductionResponseDTO completeConfirmationWithCompensationOnFailure(Long id, String actor, Long generation) {
+        try {
+            Production saved = stateCoordinator.completeConfirmation(id, actor, generation);
+            return toResponseDTO(saved);
+        } catch (Exception e) {
+            boolean canCompensate = stateCoordinator.tryBeginCompensation(
+                    id, generation, "Fallo al confirmar localmente: " + e.getMessage());
+            if (canCompensate) {
+                try {
+                    if (generation != null) {
+                        catalogClient.compensateInventory(id, generation);
+                    } else {
+                        catalogClient.compensateInventory(id);
+                    }
+                    stateCoordinator.completeCompensation(id, generation);
+                } catch (Exception compEx) {
+                    log.warn("Compensación inmediata falló para producción {}, el worker reintentará", id, compEx);
+                }
+            } else {
+                log.info("Compensación omitida para producción {} porque el estado actual o la generación no permiten compensar", id, e);
+            }
+            if (e instanceof RuntimeException re) {
+                throw re;
+            }
+            throw new RuntimeException(e);
         }
     }
 
+    public ProductionResponseDTO completeConfirmation(Long id, String actor) {
+        return completeConfirmationWithCompensationOnFailure(id, actor, null);
+    }
+
+    private ProductionResponseDTO handleCancellation(Long id, String actor) {
+        // 1. Commit atómico local en REQUIRES_NEW vía stateCoordinator
+        Production saved = stateCoordinator.executeLocalCancellation(id, actor);
+
+        // 2. Compensación externa en Catalog post-commit con reintento seguro
+        Optional<cl.duoc.eventomax.productions.model.InventoryReservationTask> taskOpt = taskService.getTaskByProductionId(id);
+        Long generation = taskOpt.map(t -> (t.getReservationGeneration() != null && t.getReservationGeneration() > 0)
+                ? t.getReservationGeneration()
+                : ((t.getAttemptCount() != null && t.getAttemptCount() > 0) ? t.getAttemptCount().longValue() : null)).orElse(null);
+        try {
+            if (generation != null) {
+                catalogClient.compensateInventory(id, generation);
+            } else {
+                catalogClient.compensateInventory(id);
+            }
+            stateCoordinator.completeCompensation(id, generation);
+        } catch (Exception e) {
+            log.warn("Post-commit compensation to Catalog failed for production {}, worker will retry", id, e);
+        }
+        return toResponseDTO(saved);
+    }
+
+    public ProductionResponseDTO executeStandardStatusUpdate(Long id, ProductionStatus nextStatus, String actor) {
+        Production saved = stateCoordinator.executeStandardStatusUpdate(id, nextStatus, actor);
+        return toResponseDTO(saved);
+    }
 
     // -------------------------------------------------------------------------
     // Mapper
     // -------------------------------------------------------------------------
 
     private ProductionResponseDTO toResponseDTO(Production production) {
-
         return new ProductionResponseDTO(
                 production.getId(),
                 production.getOrganizerId(),

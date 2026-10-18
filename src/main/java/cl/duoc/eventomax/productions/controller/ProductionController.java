@@ -42,13 +42,26 @@ public class ProductionController {
     @PostMapping
     public ResponseEntity<ProductionResponseDTO> create(
             @Parameter(description = "Datos de la producción a crear") @Valid @RequestBody ProductionRequestDTO request,
-            @org.springframework.security.core.annotation.AuthenticationPrincipal org.springframework.security.oauth2.jwt.Jwt jwt) {
+            @org.springframework.security.core.annotation.AuthenticationPrincipal org.springframework.security.oauth2.jwt.Jwt jwt,
+            org.springframework.security.core.Authentication authentication) {
 
         if (jwt == null || jwt.getSubject() == null || jwt.getSubject().isBlank()) {
             throw new org.springframework.security.access.AccessDeniedException("Identidad requerida");
         }
-        String actor = jwt.getSubject();
-        ProductionResponseDTO response = service.createProduction(request, actor);
+        String actor = cl.duoc.eventomax.productions.security.SecurityUtils.resolveOwnerId(jwt);
+        boolean organizerOnly = cl.duoc.eventomax.productions.security.SecurityUtils.isOrganizerOnly(authentication, jwt);
+
+        ProductionRequestDTO effectiveRequest = request;
+        if (organizerOnly) {
+            if (request.organizerId() != null && !request.organizerId().isBlank()
+                    && !request.organizerId().trim().equalsIgnoreCase(actor)) {
+                throw new org.springframework.security.access.AccessDeniedException(
+                        "No esta autorizado para crear producciones en nombre de otro organizador");
+            }
+            effectiveRequest = new ProductionRequestDTO(actor, request.name(), request.scheduledAt(), request.location());
+        }
+
+        ProductionResponseDTO response = service.createProduction(effectiveRequest, actor);
 
         return ResponseEntity
                 .status(HttpStatus.CREATED)
@@ -65,7 +78,19 @@ public class ProductionController {
             @Parameter(description = "Fecha de inicio para el filtro (formato ISO-8601)") @RequestParam(required = false)
             @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime from,
             @Parameter(description = "Fecha de fin para el filtro (formato ISO-8601)") @RequestParam(required = false)
-            @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime to) {
+            @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime to,
+            @org.springframework.security.core.annotation.AuthenticationPrincipal org.springframework.security.oauth2.jwt.Jwt jwt,
+            org.springframework.security.core.Authentication authentication) {
+
+        boolean organizerOnly = cl.duoc.eventomax.productions.security.SecurityUtils.isOrganizerOnly(authentication, jwt);
+
+        if (organizerOnly) {
+            String ownerId = cl.duoc.eventomax.productions.security.SecurityUtils.resolveOwnerId(jwt);
+            if (status == null && from == null && to == null) {
+                return ResponseEntity.ok(service.getAllProductionsForOwner(ownerId));
+            }
+            return ResponseEntity.ok(service.getFilteredProductionsForOwner(status, from, to, ownerId));
+        }
 
         if (status == null && from == null && to == null) {
             return ResponseEntity.ok(service.getAllProductions());
@@ -82,11 +107,22 @@ public class ProductionController {
     @ApiResponse(responseCode = "404", description = "Producción no encontrada", content = @Content)
     @GetMapping("/{id}")
     public ResponseEntity<ProductionResponseDTO> getById(
-            @Parameter(description = "ID de la producción") @PathVariable Long id) {
+            @Parameter(description = "ID de la producción") @PathVariable Long id,
+            @org.springframework.security.core.annotation.AuthenticationPrincipal org.springframework.security.oauth2.jwt.Jwt jwt,
+            org.springframework.security.core.Authentication authentication) {
 
-        return service.getProductionById(id)
-                .map(ResponseEntity::ok)
+        ProductionResponseDTO production = service.getProductionById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Produccion no encontrada con id: " + id));
+
+        if (cl.duoc.eventomax.productions.security.SecurityUtils.isOrganizerOnly(authentication, jwt)) {
+            String ownerId = cl.duoc.eventomax.productions.security.SecurityUtils.resolveOwnerId(jwt);
+            if (!production.organizerId().equalsIgnoreCase(ownerId)) {
+                throw new org.springframework.security.access.AccessDeniedException(
+                        "No tiene permisos para acceder a esta produccion");
+            }
+        }
+
+        return ResponseEntity.ok(production);
 
     }
 
@@ -102,11 +138,23 @@ public class ProductionController {
     public ResponseEntity<ProductionResponseDTO> updateStatus(
             @Parameter(description = "ID de la producción a actualizar") @PathVariable Long id,
             @Parameter(description = "Objeto con el nuevo estado") @Valid @RequestBody ProductionStatusUpdateDTO request,
-            @org.springframework.security.core.annotation.AuthenticationPrincipal org.springframework.security.oauth2.jwt.Jwt jwt) {
+            @org.springframework.security.core.annotation.AuthenticationPrincipal org.springframework.security.oauth2.jwt.Jwt jwt,
+            org.springframework.security.core.Authentication authentication) {
 
         if (jwt == null || jwt.getSubject() == null || jwt.getSubject().isBlank()) {
             throw new org.springframework.security.access.AccessDeniedException("Identidad requerida");
         }
+
+        if (cl.duoc.eventomax.productions.security.SecurityUtils.isOrganizerOnly(authentication, jwt)) {
+            String ownerId = cl.duoc.eventomax.productions.security.SecurityUtils.resolveOwnerId(jwt);
+            ProductionResponseDTO existing = service.getProductionById(id)
+                    .orElseThrow(() -> new ResourceNotFoundException("Produccion no encontrada con id: " + id));
+            if (!existing.organizerId().equalsIgnoreCase(ownerId)) {
+                throw new org.springframework.security.access.AccessDeniedException(
+                        "No tiene permisos para modificar esta produccion");
+            }
+        }
+
         String actor = jwt.getSubject();
         ProductionResponseDTO updated = service.updateStatus(id, request, actor);
         return ResponseEntity.ok(updated);

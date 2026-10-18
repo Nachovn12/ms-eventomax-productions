@@ -66,7 +66,7 @@ class ProductionJwtHttpTest {
     }
     @BeforeEach void setup() {
         var now = LocalDateTime.now();
-        var response = new ProductionResponseDTO(1L, "organizer", "Test", now.plusDays(2), "Santiago", "SOLICITADO", now, now);
+        var response = new ProductionResponseDTO(1L, "authenticated-actor", "Test", now.plusDays(2), "Santiago", "SOLICITADO", now, now);
         when(service.createProduction(any(), anyString())).thenReturn(response);
         when(service.updateStatus(anyLong(), any(), anyString())).thenReturn(response);
         when(service.getProductionById(1L)).thenReturn(Optional.of(response));
@@ -83,7 +83,7 @@ class ProductionJwtHttpTest {
     MockHttpServletRequestBuilder request(String method) {
         return switch (method) {
             case "POST" -> post("/api/productions").contentType(MediaType.APPLICATION_JSON)
-                .content("{\"organizerId\":\"organizer\",\"name\":\"Test\",\"scheduledAt\":\"2099-01-01T12:00:00\",\"location\":\"Santiago\"}");
+                .content("{\"organizerId\":\"authenticated-actor\",\"name\":\"Test\",\"scheduledAt\":\"2099-01-01T12:00:00\",\"location\":\"Santiago\"}");
             case "PUT" -> put("/api/productions/1/status").contentType(MediaType.APPLICATION_JSON).content("{\"status\":\"CANCELADO\"}");
             default -> get("/api/productions/1");
         };

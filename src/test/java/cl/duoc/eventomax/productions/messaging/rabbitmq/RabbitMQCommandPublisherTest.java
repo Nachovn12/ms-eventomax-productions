@@ -34,11 +34,16 @@ class RabbitMQCommandPublisherTest {
     private ArgumentCaptor<MessageEnvelope<CrewTicketPayload>> crewEnvelopeCaptor;
 
     @Captor
+    private ArgumentCaptor<MessageEnvelope<QuoteCommandPayload>> quoteEnvelopeCaptor;
+
+    @Captor
     private ArgumentCaptor<MessagePostProcessor> postProcessorCaptor;
 
     @BeforeEach
     void setUp() {
-        publisher = new RabbitMQCommandPublisher(rabbitTemplate, "cmd.direct", "email.send", "crew.ticket");
+        publisher = new RabbitMQCommandPublisher(
+                rabbitTemplate, "cmd.direct", "email.send", "crew.ticket", "quote.gen"
+        );
     }
 
     @Test
@@ -115,5 +120,43 @@ class RabbitMQCommandPublisherTest {
                 .convertAndSend(anyString(), anyString(), any(Object.class), any(MessagePostProcessor.class));
 
         assertDoesNotThrow(() -> publisher.publishCrewTicketCommand(payload));
+    }
+
+    @Test
+    void publishQuoteCommand_success() {
+        QuoteCommandPayload payload = new QuoteCommandPayload(
+                20L, "org-ep2", "Festival Cierre", "CERRADO", "2026-12-01T20:00", "Movistar Arena", "2026-12-02T01:30:00Z"
+        );
+
+        publisher.publishQuoteCommand(payload);
+
+        verify(rabbitTemplate, times(1)).convertAndSend(
+                eq("cmd.direct"), eq("quote.gen"), quoteEnvelopeCaptor.capture(), postProcessorCaptor.capture()
+        );
+
+        MessageEnvelope<QuoteCommandPayload> envelope = quoteEnvelopeCaptor.getValue();
+        assertEquals("GenerateClosingQuote", envelope.type());
+        assertNotNull(envelope.eventId());
+        assertNotNull(envelope.timestamp());
+        assertNotNull(envelope.traceId());
+        assertNotNull(envelope.correlationId());
+        assertEquals(payload, envelope.payload());
+
+        MessagePostProcessor mpp = postProcessorCaptor.getValue();
+        Message mockMessage = new Message(new byte[0]);
+        Message processedMessage = mpp.postProcessMessage(mockMessage);
+        assertEquals(MessageDeliveryMode.PERSISTENT, processedMessage.getMessageProperties().getDeliveryMode());
+    }
+
+    @Test
+    void publishQuoteCommand_handlesExceptionGracefully() {
+        QuoteCommandPayload payload = new QuoteCommandPayload(
+                20L, "org-ep2", "Festival Cierre", "CERRADO", "2026-12-01T20:00", "Movistar Arena", "2026-12-02T01:30:00Z"
+        );
+
+        doThrow(new AmqpException("Broker down")).when(rabbitTemplate)
+                .convertAndSend(anyString(), anyString(), any(Object.class), any(MessagePostProcessor.class));
+
+        assertDoesNotThrow(() -> publisher.publishQuoteCommand(payload));
     }
 }
