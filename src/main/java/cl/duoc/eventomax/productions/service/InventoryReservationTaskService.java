@@ -79,39 +79,63 @@ public class InventoryReservationTaskService {
     }
 
     @Transactional
+    public int markConfirmed(Long productionId, Long generation) {
+        LocalDateTime now = LocalDateTime.now();
+        if (generation != null) {
+            return taskRepository.markConfirmedForGeneration(productionId, generation, now);
+        } else {
+            return taskRepository.markConfirmedLegacy(productionId, now);
+        }
+    }
+
+    @Transactional
     public void markConfirmed(Long productionId) {
-        taskRepository.findByProductionId(productionId).ifPresent(task -> {
-            task.setStatus(InventoryReservationTask.STATUS_CONFIRMED);
-            task.setLastError(null);
-            taskRepository.saveAndFlush(task);
-        });
+        markConfirmed(productionId, null);
+    }
+
+    @Transactional
+    public int markCompensating(Long productionId, Long generation, String error) {
+        LocalDateTime now = LocalDateTime.now();
+        if (generation != null) {
+            return taskRepository.markCompensatingForGeneration(productionId, generation, error, now);
+        } else {
+            return taskRepository.markCompensatingLegacy(productionId, error, now);
+        }
     }
 
     @Transactional
     public void markCompensating(Long productionId, String error) {
-        InventoryReservationTask task = taskRepository.findByProductionId(productionId)
-                .orElseGet(() -> new InventoryReservationTask(productionId, "[]", InventoryReservationTask.STATUS_COMPENSATING));
-        task.setStatus(InventoryReservationTask.STATUS_COMPENSATING);
-        task.setLastError(error);
-        taskRepository.saveAndFlush(task);
+        markCompensating(productionId, null, error);
+    }
+
+    @Transactional
+    public int markCompensated(Long productionId, Long generation) {
+        LocalDateTime now = LocalDateTime.now();
+        if (generation != null) {
+            return taskRepository.markCompensatedForGeneration(productionId, generation, now);
+        } else {
+            return taskRepository.markCompensatedLegacy(productionId, now);
+        }
     }
 
     @Transactional
     public void markCompensated(Long productionId) {
-        taskRepository.findByProductionId(productionId).ifPresent(task -> {
-            task.setStatus(InventoryReservationTask.STATUS_COMPENSATED);
-            task.setLastError(null);
-            taskRepository.saveAndFlush(task);
-        });
+        markCompensated(productionId, null);
+    }
+
+    @Transactional
+    public int markFailed(Long productionId, Long generation, String error) {
+        LocalDateTime now = LocalDateTime.now();
+        if (generation != null) {
+            return taskRepository.markFailedForGeneration(productionId, generation, error, now);
+        } else {
+            return taskRepository.markFailedLegacy(productionId, error, now);
+        }
     }
 
     @Transactional
     public void markFailed(Long productionId, String error) {
-        taskRepository.findByProductionId(productionId).ifPresent(task -> {
-            task.setStatus(InventoryReservationTask.STATUS_FAILED);
-            task.setLastError(error);
-            taskRepository.saveAndFlush(task);
-        });
+        markFailed(productionId, null, error);
     }
 
     @Transactional(readOnly = true)

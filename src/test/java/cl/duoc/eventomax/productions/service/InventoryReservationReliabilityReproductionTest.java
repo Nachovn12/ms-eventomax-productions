@@ -81,7 +81,7 @@ class InventoryReservationReliabilityReproductionTest {
     @Autowired
     InventoryReservationTaskRepository taskRepository;
 
-    @Autowired
+    @MockitoSpyBean
     InventoryReservationTaskService taskService;
 
     @MockitoSpyBean
@@ -108,6 +108,7 @@ class InventoryReservationReliabilityReproductionTest {
     @BeforeEach
     void clean() {
         reset(outboxEventRepository);
+        reset(taskService);
         taskRepository.deleteAll();
         outboxEventRepository.deleteAll();
         productionRepository.deleteAll();
@@ -331,17 +332,21 @@ class InventoryReservationReliabilityReproductionTest {
         lenient().doNothing().when(catalogClient).compensateInventory(eq(p.getId()), any());
         lenient().doNothing().when(catalogClient).compensateInventory(p.getId());
 
+        // Reserva en curso (intención durable persistida)
+        InventoryReservationTask task = taskService.initOrUpdateIntent(p.getId(), "[{\"equipmentId\":1,\"quantity\":2}]");
+        Long generation = task.getReservationGeneration();
+
         // Simulamos que antes de completeConfirmation, otra transacción canceló la producción
         p.setStatus(ProductionStatus.CANCELADO);
         productionRepository.saveAndFlush(p);
 
         assertThrows(IllegalStateException.class, () -> {
-            productionService.completeConfirmation(p.getId(), "test-actor");
+            productionService.completeConfirmation(p.getId(), "test-actor", generation);
         });
 
-        verify(catalogClient, times(1)).compensateInventory(p.getId());
-        InventoryReservationTask task = taskRepository.findByProductionId(p.getId()).orElseThrow();
-        assertEquals(InventoryReservationTask.STATUS_COMPENSATED, task.getStatus());
+        verify(catalogClient, times(1)).compensateInventory(eq(p.getId()), any());
+        InventoryReservationTask updatedTask = taskRepository.findByProductionId(p.getId()).orElseThrow();
+        assertEquals(InventoryReservationTask.STATUS_COMPENSATED, updatedTask.getStatus());
     }
 
     @Test
@@ -375,7 +380,7 @@ class InventoryReservationReliabilityReproductionTest {
                 .when(outboxEventRepository).save(any());
 
         assertThrows(RuntimeException.class, () -> {
-            stateCoordinator.completeConfirmation(p.getId(), "actor-test");
+            stateCoordinator.completeConfirmation(p.getId(), "actor-test", task.getReservationGeneration());
         });
 
         // 1. Producción NO quedó en CONFIRMADO (revirtió a SOLICITADO)
@@ -687,5 +692,346 @@ class InventoryReservationReliabilityReproductionTest {
             executor.shutdownNow();
             executor.awaitTermination(5, TimeUnit.SECONDS);
         }
+    }
+
+    @Test
+    @DisplayName("15. Carrera F01: Respuesta tardia de generacion 1 tras compensacion e inicio de generacion 2 no debe confirmar ni sobreescribir la generacion 2")
+    void testStaleGeneration1_afterCompensationAndGeneration2Started_mustNotConfirmOrOverwrite() throws Exception {
+        Production p = createProduction(ProductionStatus.SOLICITADO);
+        Long prodId = p.getId();
+
+        List<ProductionReservationItemDTO> itemsA = List.of(new ProductionReservationItemDTO(101L, 2));
+        List<ProductionReservationItemDTO> itemsB = List.of(new ProductionReservationItemDTO(202L, 4));
+
+        ProductionStatusUpdateDTO requestA = new ProductionStatusUpdateDTO(ProductionStatus.CONFIRMADO, itemsA);
+
+        CountDownLatch aInReserve = new CountDownLatch(1);
+        CountDownLatch aRelease = new CountDownLatch(1);
+
+        // Hilo A llama a reserveInventory con gen 1L. Bloqueamos hasta que el worker compense y B inicie gen 2.
+        lenient().doAnswer(inv -> {
+            aInReserve.countDown();
+            assertTrue(aRelease.await(10, TimeUnit.SECONDS), "Timeout esperando liberar respuesta demorada de A");
+            return null;
+        }).when(catalogClient).reserveInventory(eq(prodId), eq(itemsA), eq(1L));
+
+        lenient().doNothing().when(catalogClient).compensateInventory(eq(prodId), any());
+
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        Future<ProductionResponseDTO> futureA = null;
+
+        try {
+            // 1. Iniciar Petición A (generación 1)
+            futureA = executor.submit(() -> productionService.updateStatus(prodId, requestA, "actor-A"));
+
+            // Esperar a que A esté dentro de reserveInventory (tarea en PROCESSING con gen 1L)
+            assertTrue(aInReserve.await(5, TimeUnit.SECONDS), "Timeout esperando que A inicie reserva en Catalog");
+
+            InventoryReservationTask taskAfterA = taskRepository.findByProductionId(prodId).orElseThrow();
+            assertEquals(1L, taskAfterA.getReservationGeneration());
+            assertEquals(InventoryReservationTask.STATUS_PROCESSING, taskAfterA.getStatus());
+
+            // 2. Simular que la tarea expira y el Recovery Worker compensa la generación 1
+            jdbcTemplate.update("UPDATE inventory_reservation_tasks SET updated_at = NOW() - INTERVAL '30 seconds' WHERE id = ?", taskAfterA.getId());
+            when(catalogClient.getReservationsByProduction(prodId)).thenReturn(List.of(
+                    new CatalogReservationResponseDTO(1L, 101L, "Audio", 2, "RESERVED")
+            ));
+
+            recoveryWorker.recoverStuckTasks();
+
+            InventoryReservationTask taskAfterRecovery = taskRepository.findByProductionId(prodId).orElseThrow();
+            assertEquals(InventoryReservationTask.STATUS_COMPENSATED, taskAfterRecovery.getStatus());
+            assertEquals(1L, taskAfterRecovery.getReservationGeneration());
+
+            // 3. Petición B inicia generación 2: se registra la intención para B (PROCESSING, gen 2L)
+            ProductionStateCoordinator.ConfirmationClaim claimB = stateCoordinator.beginConfirmation(
+                    prodId, "[{\"equipmentId\":202,\"quantity\":4}]");
+            assertEquals(2L, claimB.generation());
+
+            InventoryReservationTask taskAfterB = taskRepository.findByProductionId(prodId).orElseThrow();
+            assertEquals(2L, taskAfterB.getReservationGeneration());
+            assertEquals(InventoryReservationTask.STATUS_PROCESSING, taskAfterB.getStatus());
+
+            // 4. Ahora se libera la respuesta demorada de A (generación 1)
+            aRelease.countDown();
+
+            // 5. Verificar qué sucede con la Petición A:
+            // Debe fallar porque la generación 1 ya fue compensada y superada por la generación 2
+            Throwable errorA = null;
+            try {
+                futureA.get(5, TimeUnit.SECONDS);
+            } catch (ExecutionException ee) {
+                errorA = ee.getCause();
+            }
+
+            // Exigencia del fix: A debe ser rechazada con excepción (no tener éxito)
+            assertNotNull(errorA, "La confirmacion demorada de la generacion 1 DEBE fallar y no ser aceptada");
+
+            // Estado persistido: la produccion debe permanecer en SOLICITADO (no confirmada por A)
+            Production dbProd = productionRepository.findById(prodId).orElseThrow();
+            assertEquals(ProductionStatus.SOLICITADO, dbProd.getStatus(),
+                    "La produccion DEBE permanecer en SOLICITADO");
+
+            // La tarea debe permanecer en PROCESSING para la generacion 2
+            InventoryReservationTask dbTask = taskRepository.findByProductionId(prodId).orElseThrow();
+            assertEquals(InventoryReservationTask.STATUS_PROCESSING, dbTask.getStatus(),
+                    "La tarea debe permanecer en PROCESSING bajo la generacion 2");
+            assertEquals(2L, dbTask.getReservationGeneration(), "La generacion vigente en la tarea debe ser 2");
+            assertTrue(taskService.areItemsCompatible(dbTask.getItemsJson(), "[{\"equipmentId\":202,\"quantity\":4}]"),
+                    "Los items de reserva de la generacion 2 deben permanecer intactos");
+
+            // A no emite outbox
+            long outboxCount = outboxEventRepository.findAll().stream()
+                    .filter(e -> String.valueOf(prodId).equals(e.getAggregateId()))
+                    .count();
+            assertEquals(0L, outboxCount, "A no debe haber emitido ningun evento en Outbox");
+
+            // A no emite Rabbit
+            verify(rabbitTemplate, never()).convertAndSend(anyString(), anyString(), any(Object.class));
+            verify(rabbitTemplate, never()).convertAndSend(anyString(), anyString(), any(Object.class), any(org.springframework.amqp.core.MessagePostProcessor.class));
+
+            // A no llama a compensar generacion 2
+            verify(catalogClient, never()).compensateInventory(eq(prodId), eq(2L));
+            verify(catalogClient, times(1)).compensateInventory(eq(prodId), eq(1L));
+        } finally {
+            aInReserve.countDown();
+            aRelease.countDown();
+            executor.shutdownNow();
+            executor.awaitTermination(5, TimeUnit.SECONDS);
+        }
+    }
+
+    @Test
+    @DisplayName("16. Compensacion y fallo tardios de generacion anterior no alteran la generacion vigente, y replay de misma generacion es idempotente")
+    void testStaleCompensationAndFailure_mustNotAlterCurrentGeneration() {
+        Production p = createProduction(ProductionStatus.SOLICITADO);
+        Long prodId = p.getId();
+
+        // 1. Iniciar intención para generación 1
+        InventoryReservationTask taskGen1 = taskService.initOrUpdateIntent(prodId, "[{\"equipmentId\":101,\"quantity\":2}]");
+        assertEquals(1L, taskGen1.getReservationGeneration());
+        assertEquals(InventoryReservationTask.STATUS_PROCESSING, taskGen1.getStatus());
+
+        // 2. Avanzar a generación 2
+        InventoryReservationTask taskGen2 = taskService.initOrUpdateIntent(prodId, "[{\"equipmentId\":101,\"quantity\":2}]");
+        assertEquals(2L, taskGen2.getReservationGeneration());
+        assertEquals(InventoryReservationTask.STATUS_PROCESSING, taskGen2.getStatus());
+
+        // 3. Compensación tardía para generación 1: no debe afectar la generación 2
+        boolean compRes = stateCoordinator.completeCompensation(prodId, 1L);
+        assertFalse(compRes, "Compensación tardía para generación 1 debe ser rechazada/no modificar la generación 2");
+
+        InventoryReservationTask dbTaskAfterComp = taskRepository.findByProductionId(prodId).orElseThrow();
+        assertEquals(InventoryReservationTask.STATUS_PROCESSING, dbTaskAfterComp.getStatus());
+        assertEquals(2L, dbTaskAfterComp.getReservationGeneration());
+
+        // 4. Fallo tardío para generación 1: no debe alterar la tarea vigente
+        int failRes = taskService.markFailed(prodId, 1L, "Error tardío gen 1");
+        assertEquals(0, failRes, "Fallo tardío para generación 1 debe afectar 0 filas");
+
+        InventoryReservationTask dbTaskAfterFail = taskRepository.findByProductionId(prodId).orElseThrow();
+        assertEquals(InventoryReservationTask.STATUS_PROCESSING, dbTaskAfterFail.getStatus());
+        assertEquals(2L, dbTaskAfterFail.getReservationGeneration());
+        assertNull(dbTaskAfterFail.getLastError());
+
+        // 5. Petición legacy (generation == null) frente a registro con generación 2: debe ser rechazada
+        assertThrows(IllegalStateException.class, () -> stateCoordinator.completeConfirmation(prodId, "actor-legacy", null),
+                "Petición legacy sin generación debe ser rechazada cuando el registro ya utiliza generaciones avanzadas");
+
+        // 6. Confirmación legítima de la generación 2: debe tener éxito
+        Production confirmedProd = stateCoordinator.completeConfirmation(prodId, "actor-valid", 2L);
+        assertEquals(ProductionStatus.CONFIRMADO, confirmedProd.getStatus());
+
+        InventoryReservationTask dbTaskFinal = taskRepository.findByProductionId(prodId).orElseThrow();
+        assertEquals(InventoryReservationTask.STATUS_CONFIRMED, dbTaskFinal.getStatus());
+        assertEquals(2L, dbTaskFinal.getReservationGeneration());
+
+        // 7. Replay idempotente legítimo de la misma generación 2: debe retornar éxito
+        Production replayProd = stateCoordinator.completeConfirmation(prodId, "actor-replay", 2L);
+        assertEquals(ProductionStatus.CONFIRMADO, replayProd.getStatus());
+    }
+
+    @Test
+    @DisplayName("17. Llamada con generacion nula contra registro con generacion 1 debe ser rechazada sin mutar estado")
+    void testNullGenerationAgainstGeneration1Record_mustRejectWithoutMutatingState() {
+        Production p = createProduction(ProductionStatus.SOLICITADO);
+        Long prodId = p.getId();
+
+        InventoryReservationTask task = taskService.initOrUpdateIntent(prodId, "[{\"equipmentId\":101,\"quantity\":2}]");
+        assertEquals(1L, task.getReservationGeneration());
+        assertEquals(InventoryReservationTask.STATUS_PROCESSING, task.getStatus());
+
+        // Llamada con generation == null contra registro versionado con generación 1
+        IllegalStateException ex = assertThrows(IllegalStateException.class, () ->
+                stateCoordinator.completeConfirmation(prodId, "actor-legacy", null)
+        );
+        assertTrue(ex.getMessage().contains("Peticion sin generacion rechazada"));
+
+        // Verificar que el estado en BD no fue mutado
+        Production dbProd = productionRepository.findById(prodId).orElseThrow();
+        assertEquals(ProductionStatus.SOLICITADO, dbProd.getStatus());
+
+        InventoryReservationTask dbTask = taskRepository.findByProductionId(prodId).orElseThrow();
+        assertEquals(InventoryReservationTask.STATUS_PROCESSING, dbTask.getStatus());
+        assertEquals(1L, dbTask.getReservationGeneration());
+
+        long outboxCount = outboxEventRepository.findAll().stream()
+                .filter(e -> String.valueOf(prodId).equals(e.getAggregateId()))
+                .count();
+        assertEquals(0L, outboxCount);
+    }
+
+    @Test
+    @DisplayName("18. Confirmacion sin tarea valida debe ser rechazada con produccion y outbox intactos")
+    void testConfirmationWithoutTask_mustRejectWithProductionAndOutboxIntact() {
+        Production p = createProduction(ProductionStatus.SOLICITADO);
+        Long prodId = p.getId();
+
+        // Sin tarea en la tabla inventory_reservation_tasks
+        assertTrue(taskRepository.findByProductionId(prodId).isEmpty());
+
+        IllegalStateException ex = assertThrows(IllegalStateException.class, () ->
+                stateCoordinator.completeConfirmation(prodId, "actor", 1L)
+        );
+        assertTrue(ex.getMessage().contains("No existe una tarea o intencion de reserva valida"));
+
+        // Producción y outbox intactos
+        Production dbProd = productionRepository.findById(prodId).orElseThrow();
+        assertEquals(ProductionStatus.SOLICITADO, dbProd.getStatus());
+
+        long outboxCount = outboxEventRepository.findAll().stream()
+                .filter(e -> String.valueOf(prodId).equals(e.getAggregateId()))
+                .count();
+        assertEquals(0L, outboxCount);
+    }
+
+    @Test
+    @DisplayName("19. Actualizacion condicional con cero filas debe ejecutar la consulta, fallar sin falsos exitos y hacer rollback")
+    void testConditionalUpdateZeroRows_mustFailWithoutFalseSuccess() {
+        Production p = createProduction(ProductionStatus.SOLICITADO);
+        Long prodId = p.getId();
+
+        InventoryReservationTask task = taskService.initOrUpdateIntent(prodId, "[{\"equipmentId\":101,\"quantity\":2}]");
+        assertEquals(1L, task.getReservationGeneration());
+        assertEquals(InventoryReservationTask.STATUS_PROCESSING, task.getStatus());
+
+        org.springframework.transaction.support.TransactionTemplate requiresNew =
+                new org.springframework.transaction.support.TransactionTemplate(transactionManager);
+        requiresNew.setPropagationBehavior(org.springframework.transaction.TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+
+        // Interceptamos markConfirmed: la lectura inicial en completeConfirmation valida exitosamente gen=1 y status=PROCESSING,
+        // pero justo al momento de ejecutar el UPDATE condicional, una transacción concurrente independiente modificó la tarea en BD (status = FAILED) y commiteó.
+        // De este modo, la consulta condicional UPDATE ... WHERE ... AND status IN ('PROCESSING', 'CONFIRMED')
+        // realmente se ejecuta contra PostgreSQL y afecta 0 filas.
+        doAnswer(invocation -> {
+            requiresNew.executeWithoutResult(s -> {
+                jdbcTemplate.update("UPDATE inventory_reservation_tasks SET status = 'FAILED' WHERE id = ?", task.getId());
+            });
+            return invocation.callRealMethod();
+        }).when(taskService).markConfirmed(eq(prodId), eq(1L));
+
+        IllegalStateException ex = assertThrows(IllegalStateException.class, () ->
+                stateCoordinator.completeConfirmation(prodId, "actor", 1L)
+        );
+        assertTrue(ex.getMessage().contains("cero filas actualizadas"));
+
+        // Comprobamos que realmente se ejecutó esa operación de actualización condicional
+        verify(taskService, times(1)).markConfirmed(eq(prodId), eq(1L));
+
+        // Verificamos el estado desde una lectura independiente tras el rollback:
+        // 1. La producción vuelve/permanece en SOLICITADO (rollback de la mutación a CONFIRMADO)
+        String prodStatusDb = jdbcTemplate.queryForObject(
+                "SELECT status FROM productions WHERE id = ?", String.class, prodId);
+        assertEquals("SOLICITADO", prodStatusDb);
+
+        Production dbProd = productionRepository.findById(prodId).orElseThrow();
+        assertEquals(ProductionStatus.SOLICITADO, dbProd.getStatus());
+
+        // 2. La tarea conserva su estado correcto (el FAILED de la transacción concurrente, sin sobreescritura a CONFIRMED)
+        String taskStatusDb = jdbcTemplate.queryForObject(
+                "SELECT status FROM inventory_reservation_tasks WHERE id = ?", String.class, task.getId());
+        assertEquals("FAILED", taskStatusDb);
+
+        InventoryReservationTask dbTask = taskRepository.findByProductionId(prodId).orElseThrow();
+        assertEquals(InventoryReservationTask.STATUS_FAILED, dbTask.getStatus());
+        assertEquals(1L, dbTask.getReservationGeneration());
+
+        // 3. No aparecen eventos en outbox
+        long outboxCount = outboxEventRepository.findAll().stream()
+                .filter(e -> String.valueOf(prodId).equals(e.getAggregateId()))
+                .count();
+        assertEquals(0L, outboxCount);
+
+        // 4. No aparecen comandos indebidos en RabbitMQ
+        verify(rabbitTemplate, never()).convertAndSend(anyString(), anyString(), any(Object.class));
+        verify(rabbitTemplate, never()).convertAndSend(anyString(), anyString(), any(Object.class), any(org.springframework.amqp.core.MessagePostProcessor.class));
+    }
+
+    @Test
+    @DisplayName("20. Conflicto al iniciar compensacion desde ProductionService omite llamada a Catalog, con control positivo verificado")
+    void testConflictStartingCompensation_mustNotTriggerExternalCatalogCalls() {
+        Production p = createProduction(ProductionStatus.SOLICITADO);
+        Long prodId = p.getId();
+
+        // 1. Tarea avanza a generación 2
+        taskService.initOrUpdateIntent(prodId, "[{\"equipmentId\":101,\"quantity\":2}]"); // gen 1
+        taskService.initOrUpdateIntent(prodId, "[{\"equipmentId\":101,\"quantity\":2}]"); // gen 2
+
+        reset(catalogClient);
+
+        // --- ESCENARIO DE CONFLICTO (desde ProductionService) ---
+        // Una petición demorada con generación obsoleta (1L) intenta completar confirmación en ProductionService.
+        // Falla localmente por generación obsoleta; ProductionService captura la excepción y evalúa
+        // tryBeginCompensation(prodId, 1L, ...). Al detectar conflicto (gen 1 vs gen 2 activa),
+        // tryBeginCompensation retorna false, y ProductionService omite la llamada externa a Catalog.
+        assertThrows(IllegalStateException.class, () ->
+                productionService.completeConfirmation(prodId, "actor-stale", 1L)
+        );
+
+        // Verificamos que ProductionService OMITIÓ la llamada externa a Catalog
+        verify(catalogClient, never()).compensateInventory(any(), any());
+        verify(catalogClient, never()).compensateInventory(any());
+
+        // La tarea en BD debe permanecer intacta en PROCESSING bajo gen 2
+        InventoryReservationTask dbTask = taskRepository.findByProductionId(prodId).orElseThrow();
+        assertEquals(InventoryReservationTask.STATUS_PROCESSING, dbTask.getStatus());
+        assertEquals(2L, dbTask.getReservationGeneration());
+
+        // --- ESCENARIO DE CONFLICTO ADICIONAL (desde InventoryReservationRecoveryWorker) ---
+        // Simular que un worker ejecuta una tarea con generación obsoleta (1L)
+        InventoryReservationTask staleWorkerTask = new InventoryReservationTask(prodId, "[{\"equipmentId\":101,\"quantity\":2}]", InventoryReservationTask.STATUS_COMPENSATING);
+        staleWorkerTask.setReservationGeneration(1L);
+
+        recoveryWorker.processTaskRecovery(staleWorkerTask);
+
+        // Catalog sigue con 0 llamadas
+        verify(catalogClient, never()).compensateInventory(any(), any());
+        verify(catalogClient, never()).compensateInventory(any());
+
+        // --- CONTROL POSITIVO (Compensación válida sí se ejecuta desde ProductionService) ---
+        // Creamos una nueva producción donde la compensación es legítima bajo su generación vigente (gen 1)
+        Production pPos = createProduction(ProductionStatus.SOLICITADO);
+        Long prodIdPos = pPos.getId();
+        InventoryReservationTask taskPos = taskService.initOrUpdateIntent(prodIdPos, "[{\"equipmentId\":301,\"quantity\":3}]");
+        Long genPos = taskPos.getReservationGeneration();
+        assertEquals(1L, genPos);
+
+        // Simulamos que antes de confirmar, la producción fue cancelada concurrentemente
+        pPos.setStatus(ProductionStatus.CANCELADO);
+        productionRepository.saveAndFlush(pPos);
+
+        // Al invocar completeConfirmation en ProductionService, falla localmente por cancelación,
+        // pero la generación coincide (1L == 1L), autorizando la compensación técnica.
+        assertThrows(IllegalStateException.class, () ->
+                productionService.completeConfirmation(prodIdPos, "actor-valid", genPos)
+        );
+
+        // CONTROL POSITIVO: Aquí la compensación SÍ fue autorizada y ejecutada hacia Catalog
+        verify(catalogClient, times(1)).compensateInventory(eq(prodIdPos), eq(genPos));
+
+        // La tarea en BD queda confirmada como COMPENSATED
+        InventoryReservationTask dbTaskPos = taskRepository.findByProductionId(prodIdPos).orElseThrow();
+        assertEquals(InventoryReservationTask.STATUS_COMPENSATED, dbTaskPos.getStatus());
+        assertEquals(genPos, dbTaskPos.getReservationGeneration());
     }
 }

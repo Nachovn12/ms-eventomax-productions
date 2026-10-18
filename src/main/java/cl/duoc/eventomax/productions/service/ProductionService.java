@@ -216,7 +216,7 @@ public class ProductionService {
                 catalogClient.reserveInventory(id, sortedItems);
             }
         } catch (InventoryReservationException e) {
-            taskService.markFailed(id, e.getMessage());
+            taskService.markFailed(id, generation, e.getMessage());
             throw e;
         } catch (Exception e) {
             // Reconciliación ante timeout o falla de red
@@ -227,7 +227,7 @@ public class ProductionService {
                 if (hasActive) {
                     return completeConfirmationWithCompensationOnFailure(id, actor, generation);
                 } else {
-                    taskService.markFailed(id, e.getMessage());
+                    taskService.markFailed(id, generation, e.getMessage());
                     throw e;
                 }
             } catch (Exception checkEx) {
@@ -278,6 +278,10 @@ public class ProductionService {
         }
     }
 
+    public ProductionResponseDTO completeConfirmation(Long id, String actor, Long generation) {
+        return completeConfirmationWithCompensationOnFailure(id, actor, generation);
+    }
+
     public ProductionResponseDTO completeConfirmation(Long id, String actor) {
         return completeConfirmationWithCompensationOnFailure(id, actor, null);
     }
@@ -288,9 +292,7 @@ public class ProductionService {
 
         // 2. Compensación externa en Catalog post-commit con reintento seguro
         Optional<cl.duoc.eventomax.productions.model.InventoryReservationTask> taskOpt = taskService.getTaskByProductionId(id);
-        Long generation = taskOpt.map(t -> (t.getReservationGeneration() != null && t.getReservationGeneration() > 0)
-                ? t.getReservationGeneration()
-                : ((t.getAttemptCount() != null && t.getAttemptCount() > 0) ? t.getAttemptCount().longValue() : null)).orElse(null);
+        Long generation = taskOpt.map(cl.duoc.eventomax.productions.model.InventoryReservationTask::getReservationGeneration).orElse(null);
         try {
             if (generation != null) {
                 catalogClient.compensateInventory(id, generation);

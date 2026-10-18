@@ -5,6 +5,7 @@ import cl.duoc.eventomax.productions.dto.ProductionStatusUpdateDTO;
 import cl.duoc.eventomax.productions.integration.catalog.CatalogClient;
 import cl.duoc.eventomax.productions.integration.catalog.exception.CatalogUnavailableException;
 import cl.duoc.eventomax.productions.integration.catalog.exception.InventoryReservationException;
+import cl.duoc.eventomax.productions.model.InventoryReservationTask;
 import cl.duoc.eventomax.productions.model.Production;
 import cl.duoc.eventomax.productions.model.ProductionStatus;
 import cl.duoc.eventomax.productions.repository.ProductionRepository;
@@ -62,6 +63,16 @@ class ProductionServiceTest {
                 repository, eventPublisher, catalogClient, outboxEventRepository,
                 inventoryReservationTaskRepository, taskService, stateCoordinator
         );
+
+        InventoryReservationTask defaultTask = new InventoryReservationTask(1L, "[{\"equipmentId\":1,\"quantity\":2}]", InventoryReservationTask.STATUS_PROCESSING);
+        defaultTask.setReservationGeneration(1L);
+
+        lenient().when(taskService.initOrUpdateIntent(anyLong(), anyString())).thenReturn(defaultTask);
+        lenient().when(taskService.getTaskByProductionId(anyLong())).thenReturn(Optional.of(defaultTask));
+        lenient().when(taskService.markConfirmed(anyLong(), any())).thenReturn(1);
+        lenient().when(taskService.markCompensating(anyLong(), any(), any())).thenReturn(1);
+        lenient().when(taskService.markCompensated(anyLong(), any())).thenReturn(1);
+        lenient().when(taskService.areItemsCompatible(any(), any())).thenReturn(true);
     }
 
     @Test
@@ -223,7 +234,7 @@ class ProductionServiceTest {
         when(repository.saveAndFlush(any(Production.class))).thenAnswer(i -> i.getArguments()[0]);
 
         List<ProductionReservationItemDTO> items = List.of(new ProductionReservationItemDTO(1L, 2));
-        doThrow(new CatalogUnavailableException("Timeout calling catalog")).when(catalogClient).reserveInventory(1L, items);
+        doThrow(new CatalogUnavailableException("Timeout calling catalog")).when(catalogClient).reserveInventory(eq(1L), eq(items), any());
 
         when(catalogClient.getReservationsByProduction(1L)).thenReturn(List.of(
                 new cl.duoc.eventomax.productions.integration.catalog.dto.CatalogReservationResponseDTO(

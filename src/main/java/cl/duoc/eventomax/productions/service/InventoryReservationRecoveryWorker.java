@@ -58,15 +58,13 @@ public class InventoryReservationRecoveryWorker {
     }
 
     public void processTaskRecovery(InventoryReservationTask task) {
+        Long generation = task.getReservationGeneration();
+
         Production production = productionRepository.findById(task.getProductionId()).orElse(null);
         if (production == null) {
-            taskService.markFailed(task.getProductionId(), "Production not found");
+            taskService.markFailed(task.getProductionId(), generation, "Production not found");
             return;
         }
-
-        Long generation = (task.getReservationGeneration() != null && task.getReservationGeneration() > 0)
-                ? task.getReservationGeneration()
-                : ((task.getAttemptCount() != null && task.getAttemptCount() > 0) ? task.getAttemptCount().longValue() : null);
 
         if (production.getStatus() == ProductionStatus.SOLICITADO) {
             try {
@@ -87,20 +85,20 @@ public class InventoryReservationRecoveryWorker {
                         if (stateCoordinator != null) {
                             stateCoordinator.completeCompensation(task.getProductionId(), generation);
                         } else {
-                            taskService.markCompensated(task.getProductionId());
+                            taskService.markCompensated(task.getProductionId(), generation);
                         }
                     } else {
                         log.info("Recovery worker compensation skipped for production {} as state no longer permits compensation", task.getProductionId());
                     }
                 } else {
-                    taskService.markFailed(task.getProductionId(), "No active reservations found in catalog for unconfirmed production");
+                    taskService.markFailed(task.getProductionId(), generation, "No active reservations found in catalog for unconfirmed production");
                 }
             } catch (Exception e) {
                 log.error("Failed to recover task for production {}, will retry", task.getProductionId(), e);
-                taskService.markCompensating(task.getProductionId(), e.getMessage());
+                taskService.markCompensating(task.getProductionId(), generation, e.getMessage());
             }
         } else if (production.getStatus() == ProductionStatus.CONFIRMADO) {
-            taskService.markConfirmed(task.getProductionId());
+            taskService.markConfirmed(task.getProductionId(), generation);
         } else if (production.getStatus() == ProductionStatus.CANCELADO) {
             try {
                 boolean canCompensate = stateCoordinator == null || stateCoordinator.tryBeginCompensation(
@@ -115,12 +113,12 @@ public class InventoryReservationRecoveryWorker {
                     if (stateCoordinator != null) {
                         stateCoordinator.completeCompensation(task.getProductionId(), generation);
                     } else {
-                        taskService.markCompensated(task.getProductionId());
+                        taskService.markCompensated(task.getProductionId(), generation);
                     }
                 }
             } catch (Exception e) {
                 log.error("Failed to compensate cancelled production {}, will retry", task.getProductionId(), e);
-                taskService.markCompensating(task.getProductionId(), e.getMessage());
+                taskService.markCompensating(task.getProductionId(), generation, e.getMessage());
             }
         }
     }
