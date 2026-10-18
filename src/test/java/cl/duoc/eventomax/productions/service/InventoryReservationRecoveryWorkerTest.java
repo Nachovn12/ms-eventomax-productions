@@ -45,6 +45,7 @@ class InventoryReservationRecoveryWorkerTest {
         production.setId(100L);
 
         task = new InventoryReservationTask(100L, "[{\"equipmentId\":1,\"quantity\":2}]", InventoryReservationTask.STATUS_PENDING);
+        task.setReservationGeneration(1L);
     }
 
     @Test
@@ -57,7 +58,7 @@ class InventoryReservationRecoveryWorkerTest {
         recoveryWorker.recoverStuckTasks();
 
         verify(taskService).claimTaskForRecovery(task);
-        verify(taskService).markConfirmed(100L);
+        verify(taskService).markConfirmed(eq(100L), any());
     }
 
     @Test
@@ -82,7 +83,7 @@ class InventoryReservationRecoveryWorkerTest {
         recoveryWorker.processTaskRecovery(task);
 
         verify(catalogClient, times(1)).compensateInventory(eq(100L), any());
-        verify(taskService).markCompensated(100L);
+        verify(taskService).markCompensated(eq(100L), any());
     }
 
     @Test
@@ -94,7 +95,7 @@ class InventoryReservationRecoveryWorkerTest {
         recoveryWorker.processTaskRecovery(task);
 
         verify(catalogClient, never()).compensateInventory(any());
-        verify(taskService).markFailed(eq(100L), anyString());
+        verify(taskService).markFailed(eq(100L), any(), anyString());
     }
 
     @Test
@@ -105,7 +106,7 @@ class InventoryReservationRecoveryWorkerTest {
         recoveryWorker.processTaskRecovery(task);
 
         verifyNoInteractions(catalogClient);
-        verify(taskService).markConfirmed(100L);
+        verify(taskService).markConfirmed(eq(100L), any());
     }
 
     @Test
@@ -116,6 +117,6 @@ class InventoryReservationRecoveryWorkerTest {
         recoveryWorker.processTaskRecovery(task);
 
         verify(catalogClient, times(1)).compensateInventory(eq(100L), any());
-        verify(taskService).markCompensated(100L);
+        verify(taskService).markCompensated(eq(100L), any());
     }
 }

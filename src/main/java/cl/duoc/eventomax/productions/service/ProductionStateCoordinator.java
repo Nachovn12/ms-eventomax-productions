@@ -88,8 +88,9 @@ public class ProductionStateCoordinator {
                 InventoryReservationTask task = taskOpt.get();
                 if (taskService.areItemsCompatible(task.getItemsJson(), itemsJson)
                         && !InventoryReservationTask.STATUS_COMPENSATING.equals(task.getStatus())
-                        && !InventoryReservationTask.STATUS_COMPENSATED.equals(task.getStatus())) {
-                    Long gen = task.getReservationGeneration() != null ? task.getReservationGeneration() : 1L;
+                        && !InventoryReservationTask.STATUS_COMPENSATED.equals(task.getStatus())
+                        && !InventoryReservationTask.STATUS_FAILED.equals(task.getStatus())) {
+                    Long gen = task.getReservationGeneration();
                     return new ConfirmationClaim(true, gen, production);
                 }
             }
@@ -103,8 +104,7 @@ public class ProductionStateCoordinator {
             InventoryReservationTask existing = existingTaskOpt.get();
             if (InventoryReservationTask.STATUS_PROCESSING.equals(existing.getStatus())) {
                 if (taskService.areItemsCompatible(existing.getItemsJson(), itemsJson)) {
-                    Long gen = (existing.getReservationGeneration() != null && existing.getReservationGeneration() > 0)
-                            ? existing.getReservationGeneration() : 1L;
+                    Long gen = existing.getReservationGeneration();
                     return new ConfirmationClaim(false, gen, production);
                 } else {
                     throw new InvalidTransitionException(
@@ -114,8 +114,7 @@ public class ProductionStateCoordinator {
         }
 
         InventoryReservationTask task = taskService.initOrUpdateIntent(id, itemsJson);
-        Long generation = (task != null && task.getReservationGeneration() != null && task.getReservationGeneration() > 0)
-                ? task.getReservationGeneration() : 1L;
+        Long generation = task != null ? task.getReservationGeneration() : null;
         return new ConfirmationClaim(false, generation, production);
     }
 
@@ -128,36 +127,63 @@ public class ProductionStateCoordinator {
             throw new IllegalStateException("La produccion fue cancelada concurrentemente");
         }
 
-        if (production.getStatus() == ProductionStatus.CONFIRMADO) {
-            Optional<InventoryReservationTask> taskOpt = taskService.getTaskByProductionId(id);
-            if (taskOpt.isPresent()) {
-                InventoryReservationTask task = taskOpt.get();
-                if (!InventoryReservationTask.STATUS_COMPENSATING.equals(task.getStatus())
-                        && !InventoryReservationTask.STATUS_COMPENSATED.equals(task.getStatus())) {
-                    taskService.markConfirmed(id);
-                    return production;
-                }
+        Optional<InventoryReservationTask> taskOpt = taskService.getTaskByProductionId(id);
+        if (taskOpt.isEmpty()) {
+            throw new IllegalStateException("No existe una tarea o intencion de reserva valida para la produccion " + id);
+        }
+
+        InventoryReservationTask task = taskOpt.get();
+        Long currentGen = task.getReservationGeneration();
+
+        // Validación estricta de generación frente a peticiones obsoletas o legacy
+        if (currentGen != null) {
+            if (generation == null) {
+                throw new IllegalStateException("Peticion sin generacion rechazada: el registro ya utiliza fencing de generaciones (" + currentGen + ")");
             }
-            throw new InvalidTransitionException("Transicion invalida: CONFIRMADO -> CONFIRMADO");
+            if (!currentGen.equals(generation)) {
+                throw new IllegalStateException("La generacion de reserva " + generation 
+                        + " es obsoleta y fue superada por la generacion " + currentGen);
+            }
+        } else {
+            // Registro ambiguo sin generación persistida en V5: rechazar operación ambigua
+            throw new IllegalStateException("Registro de reserva ambiguo sin generacion persistida: no se puede procesar de forma segura");
+        }
+
+        String taskStatus = task.getStatus();
+        if (InventoryReservationTask.STATUS_COMPENSATING.equals(taskStatus)
+                || InventoryReservationTask.STATUS_COMPENSATED.equals(taskStatus)) {
+            throw new IllegalStateException("La reserva de inventario fue compensada concurrentemente");
+        }
+        if (InventoryReservationTask.STATUS_FAILED.equals(taskStatus)) {
+            throw new IllegalStateException("La reserva de inventario fallo previamente");
+        }
+
+        // Camino CONFIRMADO / replay idempotente
+        if (production.getStatus() == ProductionStatus.CONFIRMADO) {
+            if (!InventoryReservationTask.STATUS_PROCESSING.equals(taskStatus)
+                    && !InventoryReservationTask.STATUS_CONFIRMED.equals(taskStatus)) {
+                throw new InvalidTransitionException("Transicion invalida: la tarea esta en estado " + taskStatus);
+            }
+            int updated = taskService.markConfirmed(id, generation);
+            if (updated == 0) {
+                throw new IllegalStateException("Fallo en replay idempotente: conflicto concurrente al actualizar la tarea para la generacion " + generation);
+            }
+            return production;
         }
 
         ProductionStatus previousStatus = production.getStatus();
         validateTransition(previousStatus, ProductionStatus.CONFIRMADO);
 
-        Optional<InventoryReservationTask> taskOpt = taskService.getTaskByProductionId(id);
-        if (taskOpt.isPresent()) {
-            String taskStatus = taskOpt.get().getStatus();
-            if (InventoryReservationTask.STATUS_COMPENSATING.equals(taskStatus)
-                    || InventoryReservationTask.STATUS_COMPENSATED.equals(taskStatus)) {
-                throw new IllegalStateException("La reserva de inventario fue compensada concurrentemente");
-            }
-        }
-
         try {
             production.setStatus(ProductionStatus.CONFIRMADO);
             Production saved = repository.saveAndFlush(production);
 
-            taskService.markConfirmed(id);
+            int updated = taskService.markConfirmed(id, generation);
+            if (updated == 0) {
+                throw new IllegalStateException("Fallo al actualizar la tarea a CONFIRMED para la generacion " 
+                        + generation + ": conflicto concurrente o cero filas actualizadas");
+            }
+
             publishStatusChangedEventAndOutbox(saved, previousStatus, actor);
 
             return saved;
@@ -187,25 +213,48 @@ public class ProductionStateCoordinator {
         }
 
         Optional<InventoryReservationTask> taskOpt = taskService.getTaskByProductionId(id);
-        if (taskOpt.isPresent()) {
-            InventoryReservationTask task = taskOpt.get();
-            Long currentGen = task.getReservationGeneration() != null ? task.getReservationGeneration()
-                    : (task.getAttemptCount() != null ? task.getAttemptCount().longValue() : null);
-            if (generation != null && currentGen != null && currentGen > generation) {
-                return false;
-            }
-            if (InventoryReservationTask.STATUS_COMPENSATED.equals(task.getStatus())) {
-                return true;
-            }
+        if (taskOpt.isEmpty()) {
+            return false;
         }
 
-        taskService.markCompensating(id, errorMessage);
-        return true;
+        InventoryReservationTask task = taskOpt.get();
+        Long currentGen = task.getReservationGeneration();
+
+        // Distinguir conflicto por generación distinta, ausente o futura
+        if (currentGen != null) {
+            if (generation == null) {
+                return false;
+            }
+            if (!generation.equals(currentGen)) {
+                return false;
+            }
+        } else {
+            return false;
+        }
+
+        // Repetición de compensación ya completada bajo la misma generación
+        if (InventoryReservationTask.STATUS_COMPENSATED.equals(task.getStatus())) {
+            return true;
+        }
+
+        // Adquisición válida: sólo autoriza si la tarea quedó efectivamente en COMPENSATING
+        int updated = taskService.markCompensating(id, generation, errorMessage);
+        return updated > 0;
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
-    public void completeCompensation(Long id, Long generation) {
-        taskService.markCompensated(id);
+    public boolean completeCompensation(Long id, Long generation) {
+        Optional<InventoryReservationTask> taskOpt = taskService.getTaskByProductionId(id);
+        if (taskOpt.isEmpty()) {
+            return false;
+        }
+        InventoryReservationTask task = taskOpt.get();
+        Long currentGen = task.getReservationGeneration();
+        if (currentGen == null || generation == null || !currentGen.equals(generation)) {
+            return false;
+        }
+        int updated = taskService.markCompensated(id, generation);
+        return updated > 0;
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
@@ -219,8 +268,10 @@ public class ProductionStateCoordinator {
         production.setStatus(ProductionStatus.CANCELADO);
         Production saved = repository.saveAndFlush(production);
 
-        if (previousStatus == ProductionStatus.CONFIRMADO || taskService.getTaskByProductionId(id).isPresent()) {
-            taskService.markCompensating(id, "Produccion cancelada");
+        Optional<InventoryReservationTask> cancellationTaskOpt = taskService.getTaskByProductionId(id);
+        if (previousStatus == ProductionStatus.CONFIRMADO || cancellationTaskOpt.isPresent()) {
+            Long gen = cancellationTaskOpt.map(InventoryReservationTask::getReservationGeneration).orElse(null);
+            taskService.markCompensating(id, gen, "Produccion cancelada");
         }
 
         publishStatusChangedEventAndOutbox(saved, previousStatus, actor);
