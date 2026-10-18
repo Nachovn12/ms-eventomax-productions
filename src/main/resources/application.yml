@@ -58,3 +58,4 @@ eventomax:
       routing-key:
         email: email.send
         crew: crew.ticket
+        quote: quote.gen

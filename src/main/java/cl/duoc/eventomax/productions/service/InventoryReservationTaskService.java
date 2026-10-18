@@ -1,0 +1,86 @@
+package cl.duoc.eventomax.productions.service;
+
+import cl.duoc.eventomax.productions.model.InventoryReservationTask;
+import cl.duoc.eventomax.productions.repository.InventoryReservationTaskRepository;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.time.LocalDateTime;
+import java.util.List;
+import java.util.Optional;
+
+@Service
+public class InventoryReservationTaskService {
+
+    private final InventoryReservationTaskRepository taskRepository;
+
+    public InventoryReservationTaskService(InventoryReservationTaskRepository taskRepository) {
+        this.taskRepository = taskRepository;
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public InventoryReservationTask initOrUpdateIntent(Long productionId, String itemsJson) {
+        InventoryReservationTask task = taskRepository.findByProductionId(productionId)
+                .orElseGet(() -> new InventoryReservationTask(productionId, itemsJson, InventoryReservationTask.STATUS_PENDING));
+        task.setItemsJson(itemsJson);
+        task.setStatus(InventoryReservationTask.STATUS_PROCESSING);
+        task.setAttemptCount(task.getAttemptCount() == null ? 1 : task.getAttemptCount() + 1);
+        task.setLastError(null);
+        return taskRepository.saveAndFlush(task);
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public boolean claimTaskForRecovery(InventoryReservationTask task) {
+        LocalDateTime now = LocalDateTime.now();
+        int updated = taskRepository.claimTask(task.getId(), task.getStatus(), task.getAttemptCount(), now);
+        return updated > 0;
+    }
+
+    @Transactional
+    public void markConfirmed(Long productionId) {
+        taskRepository.findByProductionId(productionId).ifPresent(task -> {
+            task.setStatus(InventoryReservationTask.STATUS_CONFIRMED);
+            task.setLastError(null);
+            taskRepository.saveAndFlush(task);
+        });
+    }
+
+    @Transactional
+    public void markCompensating(Long productionId, String error) {
+        InventoryReservationTask task = taskRepository.findByProductionId(productionId)
+                .orElseGet(() -> new InventoryReservationTask(productionId, "[]", InventoryReservationTask.STATUS_COMPENSATING));
+        task.setStatus(InventoryReservationTask.STATUS_COMPENSATING);
+        task.setLastError(error);
+        taskRepository.saveAndFlush(task);
+    }
+
+    @Transactional
+    public void markCompensated(Long productionId) {
+        taskRepository.findByProductionId(productionId).ifPresent(task -> {
+            task.setStatus(InventoryReservationTask.STATUS_COMPENSATED);
+            task.setLastError(null);
+            taskRepository.saveAndFlush(task);
+        });
+    }
+
+    @Transactional
+    public void markFailed(Long productionId, String error) {
+        taskRepository.findByProductionId(productionId).ifPresent(task -> {
+            task.setStatus(InventoryReservationTask.STATUS_FAILED);
+            task.setLastError(error);
+            taskRepository.saveAndFlush(task);
+        });
+    }
+
+    @Transactional(readOnly = true)
+    public Optional<InventoryReservationTask> getTaskByProductionId(Long productionId) {
+        return taskRepository.findByProductionId(productionId);
+    }
+
+    @Transactional(readOnly = true)
+    public List<InventoryReservationTask> findClaimableTasks(LocalDateTime cutoff) {
+        return taskRepository.findClaimableTasks(cutoff);
+    }
+}
+

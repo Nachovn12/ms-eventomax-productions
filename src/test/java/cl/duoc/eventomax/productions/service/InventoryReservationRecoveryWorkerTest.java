@@ -5,7 +5,6 @@ import cl.duoc.eventomax.productions.integration.catalog.dto.CatalogReservationR
 import cl.duoc.eventomax.productions.model.InventoryReservationTask;
 import cl.duoc.eventomax.productions.model.Production;
 import cl.duoc.eventomax.productions.model.ProductionStatus;
-import cl.duoc.eventomax.productions.repository.InventoryReservationTaskRepository;
 import cl.duoc.eventomax.productions.repository.ProductionRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -14,18 +13,19 @@ import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
 
-import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
 @ExtendWith(MockitoExtension.class)
 class InventoryReservationRecoveryWorkerTest {
 
     @Mock
-    private InventoryReservationTaskRepository taskRepository;
+    private InventoryReservationTaskService taskService;
 
     @Mock
     private ProductionRepository productionRepository;
@@ -48,6 +48,30 @@ class InventoryReservationRecoveryWorkerTest {
     }
 
     @Test
+    void recoverStuckTasks_claimsAndProcessesClaimableTasks() {
+        when(taskService.findClaimableTasks(any(LocalDateTime.class))).thenReturn(List.of(task));
+        when(taskService.claimTaskForRecovery(task)).thenReturn(true);
+        when(productionRepository.findById(100L)).thenReturn(Optional.of(production));
+        production.setStatus(ProductionStatus.CONFIRMADO);
+
+        recoveryWorker.recoverStuckTasks();
+
+        verify(taskService).claimTaskForRecovery(task);
+        verify(taskService).markConfirmed(100L);
+    }
+
+    @Test
+    void recoverStuckTasks_skipsUnclaimedTasks() {
+        when(taskService.findClaimableTasks(any(LocalDateTime.class))).thenReturn(List.of(task));
+        when(taskService.claimTaskForRecovery(task)).thenReturn(false);
+
+        recoveryWorker.recoverStuckTasks();
+
+        verify(taskService).claimTaskForRecovery(task);
+        verifyNoInteractions(productionRepository);
+    }
+
+    @Test
     void processTaskRecovery_productionSolicitado_activeReservation_compensatesAndMarksCompensated() {
         production.setStatus(ProductionStatus.SOLICITADO);
         when(productionRepository.findById(100L)).thenReturn(Optional.of(production));
@@ -58,8 +82,7 @@ class InventoryReservationRecoveryWorkerTest {
         recoveryWorker.processTaskRecovery(task);
 
         verify(catalogClient, times(1)).compensateInventory(100L);
-        assertEquals(InventoryReservationTask.STATUS_COMPENSATED, task.getStatus());
-        verify(taskRepository).save(task);
+        verify(taskService).markCompensated(100L);
     }
 
     @Test
@@ -71,8 +94,7 @@ class InventoryReservationRecoveryWorkerTest {
         recoveryWorker.processTaskRecovery(task);
 
         verify(catalogClient, never()).compensateInventory(any());
-        assertEquals(InventoryReservationTask.STATUS_FAILED, task.getStatus());
-        verify(taskRepository).save(task);
+        verify(taskService).markFailed(eq(100L), anyString());
     }
 
     @Test
@@ -83,7 +105,17 @@ class InventoryReservationRecoveryWorkerTest {
         recoveryWorker.processTaskRecovery(task);
 
         verifyNoInteractions(catalogClient);
-        assertEquals(InventoryReservationTask.STATUS_CONFIRMED, task.getStatus());
-        verify(taskRepository).save(task);
+        verify(taskService).markConfirmed(100L);
+    }
+
+    @Test
+    void processTaskRecovery_productionCancelado_compensatesAndMarksCompensated() {
+        production.setStatus(ProductionStatus.CANCELADO);
+        when(productionRepository.findById(100L)).thenReturn(Optional.of(production));
+
+        recoveryWorker.processTaskRecovery(task);
+
+        verify(catalogClient, times(1)).compensateInventory(100L);
+        verify(taskService).markCompensated(100L);
     }
 }

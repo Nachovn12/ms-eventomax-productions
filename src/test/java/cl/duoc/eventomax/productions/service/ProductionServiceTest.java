@@ -40,7 +40,10 @@ class ProductionServiceTest {
     @Mock
     private cl.duoc.eventomax.productions.repository.InventoryReservationTaskRepository inventoryReservationTaskRepository;
 
-    @InjectMocks
+    @Mock
+    private InventoryReservationTaskService taskService;
+
+    private ProductionStateCoordinator stateCoordinator;
     private ProductionService service;
 
     private Production production;
@@ -49,6 +52,16 @@ class ProductionServiceTest {
     void setUp() {
         production = new Production();
         production.setId(1L);
+
+        var mapper = new com.fasterxml.jackson.databind.ObjectMapper()
+                .registerModule(new com.fasterxml.jackson.datatype.jsr310.JavaTimeModule());
+        stateCoordinator = new ProductionStateCoordinator(
+                repository, taskService, eventPublisher, outboxEventRepository, mapper, catalogClient
+        );
+        service = new ProductionService(
+                repository, eventPublisher, catalogClient, outboxEventRepository,
+                inventoryReservationTaskRepository, taskService, stateCoordinator
+        );
     }
 
     @Test
