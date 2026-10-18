@@ -24,6 +24,10 @@ public class CatalogClient {
     }
 
     public void reserveInventory(Long productionId, List<ProductionReservationItemDTO> items) {
+        reserveInventory(productionId, items, null);
+    }
+
+    public void reserveInventory(Long productionId, List<ProductionReservationItemDTO> items, Long generation) {
         List<CatalogReservationItemRequest> requestItems = items.stream()
                 .map(i -> new CatalogReservationItemRequest(i.equipmentId(), i.quantity()))
                 .toList();
@@ -38,6 +42,9 @@ public class CatalogClient {
                         var trace = cl.duoc.eventomax.productions.tracing.TraceContext.current();
                         headers.set("X-Trace-Id", trace.traceId());
                         headers.set("X-Correlation-Id", trace.correlationId());
+                        if (generation != null) {
+                            headers.set("X-Reservation-Generation", String.valueOf(generation));
+                        }
                     })
                     .body(request)
                     .retrieve()
@@ -75,6 +82,10 @@ public class CatalogClient {
     }
 
     public void compensateInventory(Long productionId) {
+        compensateInventory(productionId, null);
+    }
+
+    public void compensateInventory(Long productionId, Long generation) {
         try {
             catalogRestClient.post()
                     .uri("/api/catalog/reservations/production/{productionId}/compensate", productionId)
@@ -82,6 +93,9 @@ public class CatalogClient {
                         var trace = cl.duoc.eventomax.productions.tracing.TraceContext.current();
                         headers.set("X-Trace-Id", trace.traceId());
                         headers.set("X-Correlation-Id", trace.correlationId());
+                        if (generation != null) {
+                            headers.set("X-Reservation-Generation", String.valueOf(generation));
+                        }
                     })
                     .retrieve()
                     .onStatus(HttpStatusCode::is5xxServerError, (req, res) -> {

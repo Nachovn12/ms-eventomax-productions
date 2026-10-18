@@ -2,6 +2,7 @@ package cl.duoc.eventomax.productions.service;
 
 import cl.duoc.eventomax.productions.event.KafkaEventEnvelope;
 import cl.duoc.eventomax.productions.event.ProductionStatusChangedEvent;
+import cl.duoc.eventomax.productions.model.InventoryReservationTask;
 import cl.duoc.eventomax.productions.model.OutboxEvent;
 import cl.duoc.eventomax.productions.model.Production;
 import cl.duoc.eventomax.productions.model.ProductionStatus;
@@ -19,6 +20,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.Instant;
 import java.util.EnumSet;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 
@@ -58,6 +60,12 @@ public class ProductionStateCoordinator {
                 .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
     }
 
+    public record ConfirmationClaim(
+            boolean alreadyConfirmed,
+            Long generation,
+            Production production
+    ) {}
+
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void validateCanConfirm(Long id) {
         Production production = repository.findForUpdate(id)
@@ -66,7 +74,49 @@ public class ProductionStateCoordinator {
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
-    public Production completeConfirmation(Long id, String actor) {
+    public ConfirmationClaim beginConfirmation(Long id, String itemsJson) {
+        Production production = repository.findForUpdate(id)
+                .orElseThrow(() -> new ResourceNotFoundException("Produccion no encontrada con id: " + id));
+
+        if (production.getStatus() == ProductionStatus.CANCELADO) {
+            throw new InvalidTransitionException("No se puede confirmar una produccion en estado CANCELADO");
+        }
+
+        if (production.getStatus() == ProductionStatus.CONFIRMADO) {
+            Optional<InventoryReservationTask> taskOpt = taskService.getTaskByProductionId(id);
+            if (taskOpt.isPresent()) {
+                InventoryReservationTask task = taskOpt.get();
+                if (taskService.areItemsCompatible(task.getItemsJson(), itemsJson)
+                        && !InventoryReservationTask.STATUS_COMPENSATING.equals(task.getStatus())
+                        && !InventoryReservationTask.STATUS_COMPENSATED.equals(task.getStatus())) {
+                    Long gen = task.getAttemptCount() != null ? task.getAttemptCount().longValue() : null;
+                    return new ConfirmationClaim(true, gen, production);
+                }
+            }
+            throw new InvalidTransitionException("Transicion invalida: CONFIRMADO -> CONFIRMADO");
+        }
+
+        validateTransition(production.getStatus(), ProductionStatus.CONFIRMADO);
+
+        Optional<InventoryReservationTask> existingTaskOpt = taskService.getTaskByProductionId(id);
+        if (existingTaskOpt.isPresent()) {
+            InventoryReservationTask existing = existingTaskOpt.get();
+            if (InventoryReservationTask.STATUS_PROCESSING.equals(existing.getStatus())
+                    && taskService.areItemsCompatible(existing.getItemsJson(), itemsJson)) {
+                Long gen = (existing.getAttemptCount() != null && existing.getAttemptCount() > 0)
+                        ? existing.getAttemptCount().longValue() : 1L;
+                return new ConfirmationClaim(false, gen, production);
+            }
+        }
+
+        InventoryReservationTask task = taskService.initOrUpdateIntent(id, itemsJson);
+        Long generation = (task != null && task.getAttemptCount() != null && task.getAttemptCount() > 0)
+                ? task.getAttemptCount().longValue() : null;
+        return new ConfirmationClaim(false, generation, production);
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public Production completeConfirmation(Long id, String actor, Long generation) {
         Production production = repository.findForUpdate(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Produccion no encontrada con id: " + id));
 
@@ -74,16 +124,82 @@ public class ProductionStateCoordinator {
             throw new IllegalStateException("La produccion fue cancelada concurrentemente");
         }
 
+        if (production.getStatus() == ProductionStatus.CONFIRMADO) {
+            Optional<InventoryReservationTask> taskOpt = taskService.getTaskByProductionId(id);
+            if (taskOpt.isPresent()) {
+                InventoryReservationTask task = taskOpt.get();
+                if (!InventoryReservationTask.STATUS_COMPENSATING.equals(task.getStatus())
+                        && !InventoryReservationTask.STATUS_COMPENSATED.equals(task.getStatus())) {
+                    taskService.markConfirmed(id);
+                    return production;
+                }
+            }
+            throw new InvalidTransitionException("Transicion invalida: CONFIRMADO -> CONFIRMADO");
+        }
+
         ProductionStatus previousStatus = production.getStatus();
         validateTransition(previousStatus, ProductionStatus.CONFIRMADO);
 
-        production.setStatus(ProductionStatus.CONFIRMADO);
-        Production saved = repository.saveAndFlush(production);
+        Optional<InventoryReservationTask> taskOpt = taskService.getTaskByProductionId(id);
+        if (taskOpt.isPresent()) {
+            String taskStatus = taskOpt.get().getStatus();
+            if (InventoryReservationTask.STATUS_COMPENSATING.equals(taskStatus)
+                    || InventoryReservationTask.STATUS_COMPENSATED.equals(taskStatus)) {
+                throw new IllegalStateException("La reserva de inventario fue compensada concurrentemente");
+            }
+        }
 
-        taskService.markConfirmed(id);
-        publishStatusChangedEventAndOutbox(saved, previousStatus, actor);
+        try {
+            production.setStatus(ProductionStatus.CONFIRMADO);
+            Production saved = repository.saveAndFlush(production);
 
-        return saved;
+            taskService.markConfirmed(id);
+            publishStatusChangedEventAndOutbox(saved, previousStatus, actor);
+
+            return saved;
+        } catch (Exception e) {
+            production.setStatus(previousStatus);
+            throw e;
+        }
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public Production completeConfirmation(Long id, String actor) {
+        return completeConfirmation(id, actor, null);
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public boolean tryBeginCompensation(Long id, Long generation, String errorMessage) {
+        Production production = repository.findForUpdate(id).orElse(null);
+        if (production == null) {
+            return false;
+        }
+
+        if (production.getStatus() == ProductionStatus.CONFIRMADO
+                || production.getStatus() == ProductionStatus.EN_MONTAJE
+                || production.getStatus() == ProductionStatus.EN_EJECUCION
+                || production.getStatus() == ProductionStatus.CERRADO) {
+            return false;
+        }
+
+        Optional<InventoryReservationTask> taskOpt = taskService.getTaskByProductionId(id);
+        if (taskOpt.isPresent()) {
+            InventoryReservationTask task = taskOpt.get();
+            if (generation != null && task.getAttemptCount() != null && task.getAttemptCount() > generation) {
+                return false;
+            }
+            if (InventoryReservationTask.STATUS_COMPENSATED.equals(task.getStatus())) {
+                return true;
+            }
+        }
+
+        taskService.markCompensating(id, errorMessage);
+        return true;
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public void completeCompensation(Long id, Long generation) {
+        taskService.markCompensated(id);
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)

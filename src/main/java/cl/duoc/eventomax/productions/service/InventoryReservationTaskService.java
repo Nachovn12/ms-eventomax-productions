@@ -2,21 +2,54 @@ package cl.duoc.eventomax.productions.service;
 
 import cl.duoc.eventomax.productions.model.InventoryReservationTask;
 import cl.duoc.eventomax.productions.repository.InventoryReservationTaskRepository;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 
 @Service
 public class InventoryReservationTaskService {
 
     private final InventoryReservationTaskRepository taskRepository;
+    private final ObjectMapper objectMapper = new ObjectMapper();
 
     public InventoryReservationTaskService(InventoryReservationTaskRepository taskRepository) {
         this.taskRepository = taskRepository;
+    }
+
+    public boolean areItemsCompatible(String existingJson, String requestedJson) {
+        if (existingJson == null || requestedJson == null) {
+            return Objects.equals(existingJson, requestedJson);
+        }
+        if (existingJson.trim().equals(requestedJson.trim())) {
+            return true;
+        }
+        try {
+            Map<Long, Integer> existingMap = parseItemsToMap(existingJson);
+            Map<Long, Integer> requestedMap = parseItemsToMap(requestedJson);
+            return existingMap.equals(requestedMap);
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private Map<Long, Integer> parseItemsToMap(String json) throws Exception {
+        TypeReference<List<cl.duoc.eventomax.productions.dto.ProductionReservationItemDTO>> typeRef =
+                new TypeReference<>() {};
+        List<cl.duoc.eventomax.productions.dto.ProductionReservationItemDTO> list = objectMapper.readValue(json, typeRef);
+        Map<Long, Integer> map = new HashMap<>();
+        for (cl.duoc.eventomax.productions.dto.ProductionReservationItemDTO item : list) {
+            map.merge(item.equipmentId(), item.quantity(), Integer::sum);
+        }
+        return map;
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)

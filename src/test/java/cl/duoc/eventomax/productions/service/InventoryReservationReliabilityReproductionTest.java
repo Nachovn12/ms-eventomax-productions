@@ -1,6 +1,7 @@
 package cl.duoc.eventomax.productions.service;
 
 import cl.duoc.eventomax.productions.dto.ProductionReservationItemDTO;
+import cl.duoc.eventomax.productions.dto.ProductionResponseDTO;
 import cl.duoc.eventomax.productions.dto.ProductionStatusUpdateDTO;
 import cl.duoc.eventomax.productions.integration.catalog.CatalogClient;
 import cl.duoc.eventomax.productions.integration.catalog.dto.CatalogReservationResponseDTO;
@@ -31,11 +32,14 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
@@ -58,6 +62,8 @@ class InventoryReservationReliabilityReproductionTest {
         registry.add("spring.datasource.username", DB::getUsername);
         registry.add("spring.datasource.password", DB::getPassword);
         registry.add("spring.datasource.driver-class-name", DB::getDriverClassName);
+        registry.add("eventomax.reservation-recovery.initial-delay-ms", () -> "3600000");
+        registry.add("eventomax.reservation-recovery.delay-ms", () -> "3600000");
     }
 
     @Autowired
@@ -89,6 +95,9 @@ class InventoryReservationReliabilityReproductionTest {
 
     @MockitoBean
     JwtDecoder jwtDecoder;
+
+    @MockitoBean
+    org.springframework.amqp.rabbit.core.RabbitTemplate rabbitTemplate;
 
     @BeforeEach
     void clean() {
@@ -128,12 +137,13 @@ class InventoryReservationReliabilityReproductionTest {
         when(catalogClient.getReservationsByProduction(p.getId())).thenReturn(List.of(
                 new CatalogReservationResponseDTO(1L, 1L, "Audio", 5, "RESERVED")
         ));
-        doNothing().when(catalogClient).compensateInventory(p.getId());
+        lenient().doNothing().when(catalogClient).compensateInventory(eq(p.getId()), any());
+        lenient().doNothing().when(catalogClient).compensateInventory(p.getId());
 
         recoveryWorker.processTaskRecovery(taskOpt.get());
 
         // Se verifica que Catalog compensó el inventario huérfano
-        verify(catalogClient, times(1)).compensateInventory(p.getId());
+        verify(catalogClient, times(1)).compensateInventory(eq(p.getId()), eq(1L));
         InventoryReservationTask recovered = taskRepository.findByProductionId(p.getId()).orElseThrow();
         assertEquals(InventoryReservationTask.STATUS_COMPENSATED, recovered.getStatus());
     }
@@ -280,7 +290,9 @@ class InventoryReservationReliabilityReproductionTest {
     void testTimeoutDuringReservation_reconcilesAndCompletesConfirmation() {
         Production p = createProduction(ProductionStatus.SOLICITADO);
 
-        doThrow(new CatalogUnavailableException("Connection timed out"))
+        lenient().doThrow(new CatalogUnavailableException("Connection timed out"))
+                .when(catalogClient).reserveInventory(eq(p.getId()), any(), any());
+        lenient().doThrow(new CatalogUnavailableException("Connection timed out"))
                 .when(catalogClient).reserveInventory(eq(p.getId()), any());
 
         when(catalogClient.getReservationsByProduction(p.getId())).thenReturn(List.of(
@@ -383,5 +395,174 @@ class InventoryReservationReliabilityReproductionTest {
         // 2. Tarea NO quedó en COMPENSATING (revirtió atómicamente a CONFIRMED)
         InventoryReservationTask tDb = taskRepository.findByProductionId(p.getId()).orElseThrow();
         assertEquals(InventoryReservationTask.STATUS_CONFIRMED, tDb.getStatus(), "Tarea debe revertir atómicamente a CONFIRMED");
+    }
+
+    @Test
+    @DisplayName("12. Carrera A/B en updateStatus(CONFIRMADO): el fallo o replay de B tras el commit de A no debe compensar la reserva ganadora de A")
+    void testConcurrentConfirmationRace_threadBCompletingReserveAfterThreadACommits_mustNotCompensateWinnerStock() throws Exception {
+        Production p = createProduction(ProductionStatus.SOLICITADO);
+        Long prodId = p.getId();
+
+        // Simulador explícito con estado de Catalog (separado de PostgreSQL real de Productions)
+        final Object catalogLock = new Object();
+        final AtomicInteger catalogAvailableStock = new AtomicInteger(10);
+        final AtomicInteger catalogReservedStock = new AtomicInteger(0);
+        final AtomicReference<String> catalogReservationState = new AtomicReference<>("NONE");
+        final AtomicReference<List<ProductionReservationItemDTO>> catalogReservedItems = new AtomicReference<>(List.of());
+
+        // Coordinación determinista de papeles A (confirma primero) y B (sale de reserveInventory tras commit de A)
+        final ThreadLocal<String> requestRole = new ThreadLocal<>();
+        final AtomicBoolean threadAReachedReserve = new AtomicBoolean(false);
+        final CountDownLatch threadAReservedInCatalog = new CountDownLatch(1);
+        final CountDownLatch threadBReservedInCatalog = new CountDownLatch(1);
+        final CountDownLatch threadACommittedConfirmation = new CountDownLatch(1);
+
+        org.mockito.stubbing.Answer<Void> answerReserve = invocation -> {
+            @SuppressWarnings("unchecked")
+            List<ProductionReservationItemDTO> requested = invocation.getArgument(1);
+            String role = requestRole.get();
+            assertNotNull(role, "El papel del hilo (A o B) debe estar asignado explícitamente");
+
+            synchronized (catalogLock) {
+                if ("NONE".equals(catalogReservationState.get())) {
+                    int qty = requested.stream().mapToInt(ProductionReservationItemDTO::quantity).sum();
+                    catalogAvailableStock.addAndGet(-qty);
+                    catalogReservedStock.addAndGet(qty);
+                    catalogReservedItems.set(List.copyOf(requested));
+                    catalogReservationState.set("RESERVED");
+                } else if ("RESERVED".equals(catalogReservationState.get())) {
+                    // Replay idempotente en Catalog para el mismo productionId y mismos ítems
+                    assertEquals(catalogReservedItems.get(), requested,
+                            "El replay idempotente en Catalog simulado requiere el mismo conjunto de ítems");
+                } else {
+                    fail("Estado inesperado en Catalog simulado al reservar: " + catalogReservationState.get());
+                }
+            }
+
+            if ("A".equals(role)) {
+                threadAReachedReserve.set(true);
+                // A ya ejecutó initOrUpdateIntent (commit en BD) y reservó en Catalog; habilita el inicio de B
+                threadAReservedInCatalog.countDown();
+                assertTrue(
+                        threadBReservedInCatalog.await(10, TimeUnit.SECONDS),
+                        "Timeout esperando a que B pase validateCanConfirm/initOrUpdateIntent y entre a reserveInventory"
+                );
+            } else if ("B".equals(role)) {
+                // B ya pasó validateCanConfirm e initOrUpdateIntent y reservó idempotentemente; libera a A para confirmar
+                threadBReservedInCatalog.countDown();
+                assertTrue(
+                        threadACommittedConfirmation.await(10, TimeUnit.SECONDS),
+                        "Timeout esperando a que A confirme la producción en PostgreSQL antes de que B salga de reserveInventory"
+                );
+            } else {
+                fail("Papel inesperado en reserveInventory: " + role);
+            }
+            return null;
+        };
+        lenient().doAnswer(answerReserve).when(catalogClient).reserveInventory(eq(prodId), any(), any());
+        lenient().doAnswer(answerReserve).when(catalogClient).reserveInventory(eq(prodId), any());
+
+        org.mockito.stubbing.Answer<Void> answerCompensate = invocation -> {
+            synchronized (catalogLock) {
+                if ("RESERVED".equals(catalogReservationState.get())) {
+                    int qty = catalogReservedItems.get().stream()
+                            .mapToInt(ProductionReservationItemDTO::quantity)
+                            .sum();
+                    catalogAvailableStock.addAndGet(qty);
+                    catalogReservedStock.addAndGet(-qty);
+                    catalogReservationState.set("COMPENSATED");
+                }
+            }
+            return null;
+        };
+        lenient().doAnswer(answerCompensate).when(catalogClient).compensateInventory(eq(prodId), any());
+        lenient().doAnswer(answerCompensate).when(catalogClient).compensateInventory(prodId);
+
+        ProductionStatusUpdateDTO request = new ProductionStatusUpdateDTO(
+                ProductionStatus.CONFIRMADO,
+                List.of(new ProductionReservationItemDTO(100L, 2))
+        );
+
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        ProductionResponseDTO responseA = null;
+        Throwable errorA = null;
+        ProductionResponseDTO responseB = null;
+        Throwable errorB = null;
+
+        try {
+            Future<ProductionResponseDTO> futureA = executor.submit(() -> {
+                requestRole.set("A");
+                try {
+                    return productionService.updateStatus(prodId, request, "actor-A");
+                } finally {
+                    requestRole.remove();
+                    threadAReservedInCatalog.countDown();
+                    threadACommittedConfirmation.countDown();
+                }
+            });
+
+            Future<ProductionResponseDTO> futureB = executor.submit(() -> {
+                requestRole.set("B");
+                try {
+                    assertTrue(
+                            threadAReservedInCatalog.await(10, TimeUnit.SECONDS),
+                            "Timeout esperando a que A cree la intención inicial antes de iniciar B"
+                    );
+                    assertTrue(
+                            threadAReachedReserve.get(),
+                            "El hilo A falló antes de alcanzar reserveInventory"
+                    );
+                    return productionService.updateStatus(prodId, request, "actor-B");
+                } finally {
+                    requestRole.remove();
+                    threadBReservedInCatalog.countDown();
+                }
+            });
+
+            try {
+                responseA = futureA.get(15, TimeUnit.SECONDS);
+            } catch (ExecutionException e) {
+                errorA = e.getCause() != null ? e.getCause() : e;
+            }
+
+            try {
+                responseB = futureB.get(15, TimeUnit.SECONDS);
+            } catch (ExecutionException e) {
+                errorB = e.getCause() != null ? e.getCause() : e;
+            }
+        } finally {
+            threadAReservedInCatalog.countDown();
+            threadBReservedInCatalog.countDown();
+            threadACommittedConfirmation.countDown();
+            executor.shutdownNow();
+            executor.awaitTermination(5, TimeUnit.SECONDS);
+        }
+
+        final ProductionResponseDTO finalResponseA = responseA;
+        final Throwable finalErrorA = errorA;
+        final Throwable finalErrorB = errorB;
+
+        Production dbProd = productionRepository.findById(prodId).orElseThrow();
+        InventoryReservationTask dbTask = taskRepository.findByProductionId(prodId).orElseThrow();
+        long confirmedOutboxCount = outboxEventRepository.findAll().stream()
+                .filter(e -> String.valueOf(prodId).equals(e.getAggregateId())
+                        && "ProductionStatusChanged".equals(e.getEventType()))
+                .count();
+
+        assertAll("Poscondiciones de integridad entre PostgreSQL real y Catalog simulado",
+                () -> assertNull(finalErrorA, () -> "La solicitud ganadora A no debe fallar, pero lanzó: " + finalErrorA),
+                () -> assertNotNull(finalResponseA, "La solicitud A debe retornar respuesta"),
+                () -> assertEquals("CONFIRMADO", finalResponseA != null ? finalResponseA.status() : null, "A debe confirmar la producción"),
+                () -> assertEquals(ProductionStatus.CONFIRMADO, dbProd.getStatus(), "PostgreSQL: la producción debe permanecer en CONFIRMADO"),
+                () -> assertEquals(1L, confirmedOutboxCount, "PostgreSQL: debe existir exactamente 1 evento ProductionStatusChanged en Outbox"),
+                () -> assertEquals("RESERVED", catalogReservationState.get(),
+                        () -> "Catalog simulado: la reserva ganadora de A fue compensada indebidamente tras el fallo de B (" + finalErrorB + ")"),
+                () -> assertEquals(8, catalogAvailableStock.get(), "Catalog simulado: el stock disponible debe permanecer descontado en 8"),
+                () -> assertEquals(2, catalogReservedStock.get(), "Catalog simulado: el stock reservado debe permanecer en 2"),
+                () -> assertEquals(InventoryReservationTask.STATUS_CONFIRMED, dbTask.getStatus(),
+                        "PostgreSQL: la tarea durable debe permanecer en CONFIRMED y no ser sobrescrita a COMPENSATED"),
+                () -> verify(catalogClient, never()).compensateInventory(eq(prodId), any()),
+                () -> verify(catalogClient, never()).compensateInventory(prodId)
+        );
     }
 }

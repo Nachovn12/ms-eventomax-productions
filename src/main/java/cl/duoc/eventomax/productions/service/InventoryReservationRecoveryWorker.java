@@ -22,14 +22,25 @@ public class InventoryReservationRecoveryWorker {
     private final InventoryReservationTaskService taskService;
     private final ProductionRepository productionRepository;
     private final CatalogClient catalogClient;
+    private final ProductionStateCoordinator stateCoordinator;
 
     public InventoryReservationRecoveryWorker(
             InventoryReservationTaskService taskService,
             ProductionRepository productionRepository,
             CatalogClient catalogClient) {
+        this(taskService, productionRepository, catalogClient, null);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public InventoryReservationRecoveryWorker(
+            InventoryReservationTaskService taskService,
+            ProductionRepository productionRepository,
+            CatalogClient catalogClient,
+            ProductionStateCoordinator stateCoordinator) {
         this.taskService = taskService;
         this.productionRepository = productionRepository;
         this.catalogClient = catalogClient;
+        this.stateCoordinator = stateCoordinator;
     }
 
     @Scheduled(fixedDelayString = "${eventomax.reservation-recovery.delay-ms:5000}", initialDelayString = "${eventomax.reservation-recovery.initial-delay-ms:5000}")
@@ -52,6 +63,8 @@ public class InventoryReservationRecoveryWorker {
             return;
         }
 
+        Long generation = (task.getAttemptCount() != null && task.getAttemptCount() > 0) ? task.getAttemptCount().longValue() : null;
+
         if (production.getStatus() == ProductionStatus.SOLICITADO) {
             try {
                 List<CatalogReservationResponseDTO> reservations = catalogClient.getReservationsByProduction(task.getProductionId());
@@ -59,9 +72,23 @@ public class InventoryReservationRecoveryWorker {
                         .anyMatch(r -> "RESERVED".equalsIgnoreCase(r.status()));
 
                 if (hasActiveReservations || InventoryReservationTask.STATUS_COMPENSATING.equals(task.getStatus())) {
-                    log.warn("Recovering orphan reservation for production {} by technical compensation", task.getProductionId());
-                    catalogClient.compensateInventory(task.getProductionId());
-                    taskService.markCompensated(task.getProductionId());
+                    boolean canCompensate = stateCoordinator == null || stateCoordinator.tryBeginCompensation(
+                            task.getProductionId(), generation, "Recovery worker compensation");
+                    if (canCompensate) {
+                        log.warn("Recovering orphan reservation for production {} by technical compensation", task.getProductionId());
+                        if (generation != null) {
+                            catalogClient.compensateInventory(task.getProductionId(), generation);
+                        } else {
+                            catalogClient.compensateInventory(task.getProductionId());
+                        }
+                        if (stateCoordinator != null) {
+                            stateCoordinator.completeCompensation(task.getProductionId(), generation);
+                        } else {
+                            taskService.markCompensated(task.getProductionId());
+                        }
+                    } else {
+                        log.info("Recovery worker compensation skipped for production {} as state no longer permits compensation", task.getProductionId());
+                    }
                 } else {
                     taskService.markFailed(task.getProductionId(), "No active reservations found in catalog for unconfirmed production");
                 }
@@ -73,9 +100,21 @@ public class InventoryReservationRecoveryWorker {
             taskService.markConfirmed(task.getProductionId());
         } else if (production.getStatus() == ProductionStatus.CANCELADO) {
             try {
-                log.warn("Ensuring compensation for cancelled production {}", task.getProductionId());
-                catalogClient.compensateInventory(task.getProductionId());
-                taskService.markCompensated(task.getProductionId());
+                boolean canCompensate = stateCoordinator == null || stateCoordinator.tryBeginCompensation(
+                        task.getProductionId(), generation, "Recovery worker cancelled production");
+                if (canCompensate) {
+                    log.warn("Ensuring compensation for cancelled production {}", task.getProductionId());
+                    if (generation != null) {
+                        catalogClient.compensateInventory(task.getProductionId(), generation);
+                    } else {
+                        catalogClient.compensateInventory(task.getProductionId());
+                    }
+                    if (stateCoordinator != null) {
+                        stateCoordinator.completeCompensation(task.getProductionId(), generation);
+                    } else {
+                        taskService.markCompensated(task.getProductionId());
+                    }
+                }
             } catch (Exception e) {
                 log.error("Failed to compensate cancelled production {}, will retry", task.getProductionId(), e);
                 taskService.markCompensating(task.getProductionId(), e.getMessage());

@@ -27,6 +27,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 import java.time.LocalDateTime;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -183,26 +184,37 @@ public class ProductionService {
     }
 
     private ProductionResponseDTO handleConfirmation(Long id, ProductionStatusUpdateDTO request, String actor) {
-        // 1. Validar primero que la producción exista y pueda transicionar a CONFIRMADO (en su propia TX aislada)
-        stateCoordinator.validateCanConfirm(id);
-
         if (request.items() == null || request.items().isEmpty()) {
+            stateCoordinator.validateCanConfirm(id);
             throw new IllegalArgumentException("Se requieren ítems de inventario para confirmar una producción");
         }
 
+        List<ProductionReservationItemDTO> sortedItems = request.items().stream()
+                .sorted(Comparator.comparing(ProductionReservationItemDTO::equipmentId))
+                .toList();
+
         String itemsJson;
         try {
-            itemsJson = objectMapper.writeValueAsString(request.items());
+            itemsJson = objectMapper.writeValueAsString(sortedItems);
         } catch (Exception e) {
             itemsJson = "[]";
         }
 
-        // 2. Persistir intención durable antes de llamar a Catalog (en REQUIRES_NEW vía taskService)
-        taskService.initOrUpdateIntent(id, itemsJson);
+        // 1. Coordinar intención de confirmación de forma atómica durable (vía REQUIRES_NEW)
+        ProductionStateCoordinator.ConfirmationClaim claim = stateCoordinator.beginConfirmation(id, itemsJson);
+        if (claim.alreadyConfirmed()) {
+            return toResponseDTO(claim.production());
+        }
 
-        // 3. Llamada HTTP a Catalog (sin ninguna transacción o lock de BD abierto)
+        Long generation = claim.generation();
+
+        // 2. Llamada HTTP a Catalog (sin transacciones de BD ni locks abiertos)
         try {
-            catalogClient.reserveInventory(id, request.items());
+            if (generation != null) {
+                catalogClient.reserveInventory(id, sortedItems, generation);
+            } else {
+                catalogClient.reserveInventory(id, sortedItems);
+            }
         } catch (InventoryReservationException e) {
             taskService.markFailed(id, e.getMessage());
             throw e;
@@ -213,32 +225,51 @@ public class ProductionService {
                 boolean hasActive = reservations != null && reservations.stream()
                         .anyMatch(r -> "RESERVED".equalsIgnoreCase(r.status()));
                 if (hasActive) {
-                    return completeConfirmationWithCompensationOnFailure(id, actor);
+                    return completeConfirmationWithCompensationOnFailure(id, actor, generation);
                 } else {
                     taskService.markFailed(id, e.getMessage());
                     throw e;
                 }
             } catch (Exception checkEx) {
-                taskService.markCompensating(id, "Error de comunicación con Catalog: " + e.getMessage());
+                if (stateCoordinator.tryBeginCompensation(id, generation, "Error de comunicación con Catalog: " + e.getMessage())) {
+                    try {
+                        if (generation != null) {
+                            catalogClient.compensateInventory(id, generation);
+                        } else {
+                            catalogClient.compensateInventory(id);
+                        }
+                        stateCoordinator.completeCompensation(id, generation);
+                    } catch (Exception ignored) {
+                    }
+                }
                 throw e;
             }
         }
 
-        // 4. Completar confirmación local en una nueva transacción vía stateCoordinator
-        return completeConfirmationWithCompensationOnFailure(id, actor);
+        // 3. Completar confirmación local en una nueva transacción vía stateCoordinator
+        return completeConfirmationWithCompensationOnFailure(id, actor, generation);
     }
 
-    private ProductionResponseDTO completeConfirmationWithCompensationOnFailure(Long id, String actor) {
+    private ProductionResponseDTO completeConfirmationWithCompensationOnFailure(Long id, String actor, Long generation) {
         try {
-            Production saved = stateCoordinator.completeConfirmation(id, actor);
+            Production saved = stateCoordinator.completeConfirmation(id, actor, generation);
             return toResponseDTO(saved);
         } catch (Exception e) {
-            taskService.markCompensating(id, "Fallo al confirmar localmente: " + e.getMessage());
-            try {
-                catalogClient.compensateInventory(id);
-                taskService.markCompensated(id);
-            } catch (Exception compEx) {
-                log.warn("Compensación inmediata falló para producción {}, el worker reintentará", id, compEx);
+            boolean canCompensate = stateCoordinator.tryBeginCompensation(
+                    id, generation, "Fallo al confirmar localmente: " + e.getMessage());
+            if (canCompensate) {
+                try {
+                    if (generation != null) {
+                        catalogClient.compensateInventory(id, generation);
+                    } else {
+                        catalogClient.compensateInventory(id);
+                    }
+                    stateCoordinator.completeCompensation(id, generation);
+                } catch (Exception compEx) {
+                    log.warn("Compensación inmediata falló para producción {}, el worker reintentará", id, compEx);
+                }
+            } else {
+                log.info("Compensación omitida para producción {} porque el estado actual o la generación no permiten compensar", id, e);
             }
             if (e instanceof RuntimeException re) {
                 throw re;
@@ -248,7 +279,7 @@ public class ProductionService {
     }
 
     public ProductionResponseDTO completeConfirmation(Long id, String actor) {
-        return completeConfirmationWithCompensationOnFailure(id, actor);
+        return completeConfirmationWithCompensationOnFailure(id, actor, null);
     }
 
     private ProductionResponseDTO handleCancellation(Long id, String actor) {
@@ -256,9 +287,15 @@ public class ProductionService {
         Production saved = stateCoordinator.executeLocalCancellation(id, actor);
 
         // 2. Compensación externa en Catalog post-commit con reintento seguro
+        Optional<cl.duoc.eventomax.productions.model.InventoryReservationTask> taskOpt = taskService.getTaskByProductionId(id);
+        Long generation = taskOpt.map(t -> (t.getAttemptCount() != null && t.getAttemptCount() > 0) ? t.getAttemptCount().longValue() : null).orElse(null);
         try {
-            catalogClient.compensateInventory(id);
-            taskService.markCompensated(id);
+            if (generation != null) {
+                catalogClient.compensateInventory(id, generation);
+            } else {
+                catalogClient.compensateInventory(id);
+            }
+            stateCoordinator.completeCompensation(id, generation);
         } catch (Exception e) {
             log.warn("Post-commit compensation to Catalog failed for production {}, worker will retry", id, e);
         }

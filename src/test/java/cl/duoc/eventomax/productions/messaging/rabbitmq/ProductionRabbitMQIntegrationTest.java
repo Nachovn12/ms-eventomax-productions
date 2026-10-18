@@ -58,10 +58,12 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.reset;
 
 /**
@@ -164,7 +166,8 @@ class ProductionRabbitMQIntegrationTest {
         purgeEphemeralQueues();
 
         reset(catalogClient);
-        doNothing().when(catalogClient).reserveInventory(anyLong(), anyList());
+        lenient().doNothing().when(catalogClient).reserveInventory(anyLong(), anyList(), any());
+        lenient().doNothing().when(catalogClient).reserveInventory(anyLong(), anyList());
 
         inventoryReservationTaskRepository.deleteAllInBatch();
         outboxEventRepository.deleteAllInBatch();
@@ -341,7 +344,9 @@ class ProductionRabbitMQIntegrationTest {
         );
 
         // Caso A: Fallo al reservar inventario en Catalog durante SOLICITADO -> CONFIRMADO
-        doThrow(new InventoryReservationException("Stock insuficiente simulado en Catalog"))
+        lenient().doThrow(new InventoryReservationException("Stock insuficiente simulado en Catalog"))
+                .when(catalogClient).reserveInventory(anyLong(), anyList(), any());
+        lenient().doThrow(new InventoryReservationException("Stock insuficiente simulado en Catalog"))
                 .when(catalogClient).reserveInventory(anyLong(), anyList());
 
         List<ProductionReservationItemDTO> items = List.of(new ProductionReservationItemDTO(1L, 99));
@@ -361,7 +366,8 @@ class ProductionRabbitMQIntegrationTest {
 
         // Caso B: Confirmar exitosamente, purgar cola, y forzar rollback en EN_MONTAJE después de publishEvent()
         reset(catalogClient);
-        doNothing().when(catalogClient).reserveInventory(anyLong(), anyList());
+        lenient().doNothing().when(catalogClient).reserveInventory(anyLong(), anyList(), any());
+        lenient().doNothing().when(catalogClient).reserveInventory(anyLong(), anyList());
         productionService.updateStatus(
                 created.id(),
                 new ProductionStatusUpdateDTO(ProductionStatus.CONFIRMADO, items),
