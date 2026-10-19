@@ -15,10 +15,17 @@ public record ProductionStatusUpdateDTO(
         ProductionStatus status,
 
         @Schema(description = "Ítems de inventario a reservar (Requerido solo al transicionar a CONFIRMADO)")
-        List<@Valid ProductionReservationItemDTO> items
+        List<@Valid ProductionReservationItemDTO> items,
+
+        @Schema(description = "IDs de servicios de catálogo a contratar (Opcional, al transicionar a CONFIRMADO)")
+        List<Long> serviceIds
 ) {
     public ProductionStatusUpdateDTO(ProductionStatus status) {
-        this(status, null);
+        this(status, null, null);
+    }
+
+    public ProductionStatusUpdateDTO(ProductionStatus status, List<@Valid ProductionReservationItemDTO> items) {
+        this(status, items, null);
     }
 }
 

@@ -73,6 +73,7 @@ class ProductionServiceTest {
         lenient().when(taskService.markCompensating(anyLong(), any(), any())).thenReturn(1);
         lenient().when(taskService.markCompensated(anyLong(), any())).thenReturn(1);
         lenient().when(taskService.areItemsCompatible(any(), any())).thenReturn(true);
+        lenient().when(taskService.areServicesCompatible(any(), any())).thenReturn(true);
     }
 
     @Test

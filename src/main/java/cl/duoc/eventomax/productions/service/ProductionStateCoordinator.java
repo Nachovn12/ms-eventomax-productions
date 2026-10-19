@@ -18,7 +18,9 @@ import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
+import java.time.LocalDateTime;
 import java.util.EnumSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -31,6 +33,7 @@ public class ProductionStateCoordinator {
     private final InventoryReservationTaskService taskService;
     private final ApplicationEventPublisher eventPublisher;
     private final OutboxEventRepository outboxEventRepository;
+    private final cl.duoc.eventomax.productions.repository.ProductionContractedServiceRepository contractedServiceRepository;
     private final ObjectMapper objectMapper;
 
     @org.springframework.beans.factory.annotation.Autowired
@@ -38,8 +41,19 @@ public class ProductionStateCoordinator {
             ProductionRepository repository,
             InventoryReservationTaskService taskService,
             ApplicationEventPublisher eventPublisher,
+            OutboxEventRepository outboxEventRepository,
+            cl.duoc.eventomax.productions.repository.ProductionContractedServiceRepository contractedServiceRepository) {
+        this(repository, taskService, eventPublisher, outboxEventRepository, contractedServiceRepository, new ObjectMapper()
+                .registerModule(new JavaTimeModule())
+                .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS), null);
+    }
+
+    public ProductionStateCoordinator(
+            ProductionRepository repository,
+            InventoryReservationTaskService taskService,
+            ApplicationEventPublisher eventPublisher,
             OutboxEventRepository outboxEventRepository) {
-        this(repository, taskService, eventPublisher, outboxEventRepository, new ObjectMapper()
+        this(repository, taskService, eventPublisher, outboxEventRepository, null, new ObjectMapper()
                 .registerModule(new JavaTimeModule())
                 .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS), null);
     }
@@ -51,10 +65,22 @@ public class ProductionStateCoordinator {
             OutboxEventRepository outboxEventRepository,
             ObjectMapper objectMapper,
             cl.duoc.eventomax.productions.integration.catalog.CatalogClient catalogClient) {
+        this(repository, taskService, eventPublisher, outboxEventRepository, null, objectMapper, catalogClient);
+    }
+
+    public ProductionStateCoordinator(
+            ProductionRepository repository,
+            InventoryReservationTaskService taskService,
+            ApplicationEventPublisher eventPublisher,
+            OutboxEventRepository outboxEventRepository,
+            cl.duoc.eventomax.productions.repository.ProductionContractedServiceRepository contractedServiceRepository,
+            ObjectMapper objectMapper,
+            cl.duoc.eventomax.productions.integration.catalog.CatalogClient catalogClient) {
         this.repository = repository;
         this.taskService = taskService;
         this.eventPublisher = eventPublisher;
         this.outboxEventRepository = outboxEventRepository;
+        this.contractedServiceRepository = contractedServiceRepository;
         this.objectMapper = objectMapper != null ? objectMapper : new ObjectMapper()
                 .registerModule(new JavaTimeModule())
                 .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
@@ -73,8 +99,45 @@ public class ProductionStateCoordinator {
         validateTransition(production.getStatus(), ProductionStatus.CONFIRMADO);
     }
 
+    @Transactional(readOnly = true)
+    public Optional<ConfirmationClaim> checkFastReplayOrInvalid(Long id, String itemsJson, List<Long> requestedServiceIds) {
+        Optional<Production> prodOpt = repository.findById(id);
+        if (prodOpt.isEmpty()) {
+            prodOpt = repository.findForUpdate(id);
+        }
+        Production production = prodOpt
+                .orElseThrow(() -> new ResourceNotFoundException("Produccion no encontrada con id: " + id));
+
+        if (production.getStatus() == ProductionStatus.CANCELADO) {
+            throw new InvalidTransitionException("No se puede confirmar una produccion en estado CANCELADO");
+        }
+
+        if (production.getStatus() == ProductionStatus.CONFIRMADO) {
+            Optional<InventoryReservationTask> taskOpt = taskService.getTaskByProductionId(id);
+            if (taskOpt.isPresent()) {
+                InventoryReservationTask task = taskOpt.get();
+                if (taskService.areItemsCompatible(task.getItemsJson(), itemsJson)
+                        && taskService.areServicesCompatibleWithIds(task.getServicesJson(), requestedServiceIds)
+                        && !InventoryReservationTask.STATUS_COMPENSATING.equals(task.getStatus())
+                        && !InventoryReservationTask.STATUS_COMPENSATED.equals(task.getStatus())
+                        && !InventoryReservationTask.STATUS_FAILED.equals(task.getStatus())) {
+                    Long gen = task.getReservationGeneration();
+                    return Optional.of(new ConfirmationClaim(true, gen, production));
+                }
+            }
+            throw new InvalidTransitionException("Transicion invalida: la produccion ya fue confirmada con otra seleccion de servicios o equipamiento");
+        }
+
+        return Optional.empty();
+    }
+
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public ConfirmationClaim beginConfirmation(Long id, String itemsJson) {
+        return beginConfirmation(id, itemsJson, null);
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public ConfirmationClaim beginConfirmation(Long id, String itemsJson, String servicesJson) {
         Production production = repository.findForUpdate(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Produccion no encontrada con id: " + id));
 
@@ -87,6 +150,7 @@ public class ProductionStateCoordinator {
             if (taskOpt.isPresent()) {
                 InventoryReservationTask task = taskOpt.get();
                 if (taskService.areItemsCompatible(task.getItemsJson(), itemsJson)
+                        && areServicesCompatible(task.getServicesJson(), servicesJson)
                         && !InventoryReservationTask.STATUS_COMPENSATING.equals(task.getStatus())
                         && !InventoryReservationTask.STATUS_COMPENSATED.equals(task.getStatus())
                         && !InventoryReservationTask.STATUS_FAILED.equals(task.getStatus())) {
@@ -94,7 +158,7 @@ public class ProductionStateCoordinator {
                     return new ConfirmationClaim(true, gen, production);
                 }
             }
-            throw new InvalidTransitionException("Transicion invalida: CONFIRMADO -> CONFIRMADO");
+            throw new InvalidTransitionException("Transicion invalida: la produccion ya fue confirmada con otra seleccion de servicios o equipamiento");
         }
 
         validateTransition(production.getStatus(), ProductionStatus.CONFIRMADO);
@@ -103,23 +167,35 @@ public class ProductionStateCoordinator {
         if (existingTaskOpt.isPresent()) {
             InventoryReservationTask existing = existingTaskOpt.get();
             if (InventoryReservationTask.STATUS_PROCESSING.equals(existing.getStatus())) {
-                if (taskService.areItemsCompatible(existing.getItemsJson(), itemsJson)) {
+                if (taskService.areItemsCompatible(existing.getItemsJson(), itemsJson)
+                        && areServicesCompatible(existing.getServicesJson(), servicesJson)) {
                     Long gen = existing.getReservationGeneration();
                     return new ConfirmationClaim(false, gen, production);
                 } else {
                     throw new InvalidTransitionException(
-                            "Una confirmacion con diferente equipamiento ya se encuentra en procesamiento para la produccion " + id);
+                            "Una confirmacion con diferente equipamiento o servicios ya se encuentra en procesamiento para la produccion " + id);
                 }
             }
         }
 
-        InventoryReservationTask task = taskService.initOrUpdateIntent(id, itemsJson);
+        InventoryReservationTask task = taskService.initOrUpdateIntent(id, itemsJson, servicesJson);
         Long generation = task != null ? task.getReservationGeneration() : null;
         return new ConfirmationClaim(false, generation, production);
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public Production completeConfirmation(Long id, String actor, Long generation) {
+        return completeConfirmation(id, actor, generation, null);
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public Production completeConfirmation(Long id, String actor) {
+        return completeConfirmation(id, actor, null, null);
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public Production completeConfirmation(
+            Long id, String actor, Long generation, List<cl.duoc.eventomax.productions.dto.ContractedServiceDto> contractedServices) {
         Production production = repository.findForUpdate(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Produccion no encontrada con id: " + id));
 
@@ -184,18 +260,21 @@ public class ProductionStateCoordinator {
                         + generation + ": conflicto concurrente o cero filas actualizadas");
             }
 
-            publishStatusChangedEventAndOutbox(saved, previousStatus, actor);
+            if (contractedServiceRepository != null && contractedServices != null && !contractedServices.isEmpty()) {
+                LocalDateTime now = LocalDateTime.now();
+                for (cl.duoc.eventomax.productions.dto.ContractedServiceDto s : contractedServices) {
+                    contractedServiceRepository.save(new cl.duoc.eventomax.productions.model.ProductionContractedService(
+                            saved, s.serviceId(), s.serviceName(), s.unitPrice(), now, generation));
+                }
+            }
+
+            publishStatusChangedEventAndOutbox(saved, previousStatus, actor, contractedServices);
 
             return saved;
         } catch (Exception e) {
             production.setStatus(previousStatus);
             throw e;
         }
-    }
-
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
-    public Production completeConfirmation(Long id, String actor) {
-        return completeConfirmation(id, actor, null);
     }
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
@@ -294,6 +373,11 @@ public class ProductionStateCoordinator {
     }
 
     private void publishStatusChangedEventAndOutbox(Production updated, ProductionStatus previousStatus, String actor) {
+        publishStatusChangedEventAndOutbox(updated, previousStatus, actor, null);
+    }
+
+    private void publishStatusChangedEventAndOutbox(
+            Production updated, ProductionStatus previousStatus, String actor, List<cl.duoc.eventomax.productions.dto.ContractedServiceDto> services) {
         Instant now = Instant.now();
         var trace = TraceContext.current();
         ProductionStatusChangedEvent statusEvent = new ProductionStatusChangedEvent(
@@ -304,7 +388,8 @@ public class ProductionStateCoordinator {
                 updated.getStatus(),
                 updated.getScheduledAt(),
                 updated.getLocation(),
-                now
+                now,
+                services
         );
         eventPublisher.publishEvent(statusEvent);
 
@@ -356,6 +441,18 @@ public class ProductionStateCoordinator {
                     "Transicion invalida: " + current + " -> " + next
                     + ". Transiciones permitidas desde " + current + ": " + allowed);
         }
+    }
+
+    private boolean areServicesCompatible(String existingJson, String requestedJson) {
+        boolean existingEmpty = existingJson == null || existingJson.trim().isEmpty() || existingJson.trim().equals("[]");
+        boolean requestedEmpty = requestedJson == null || requestedJson.trim().isEmpty() || requestedJson.trim().equals("[]");
+        if (existingEmpty && requestedEmpty) {
+            return true;
+        }
+        if (existingEmpty != requestedEmpty) {
+            return false;
+        }
+        return taskService.areServicesCompatible(existingJson, requestedJson);
     }
 }
 

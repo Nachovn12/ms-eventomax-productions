@@ -27,9 +27,12 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 
 @Service
@@ -189,6 +192,20 @@ public class ProductionService {
             throw new IllegalArgumentException("Se requieren ítems de inventario para confirmar una producción");
         }
 
+        if (request.serviceIds() != null && !request.serviceIds().isEmpty()) {
+            for (Long sId : request.serviceIds()) {
+                if (sId == null || sId <= 0) {
+                    stateCoordinator.validateCanConfirm(id);
+                    throw new IllegalArgumentException("ID de servicio inválido: debe ser un número positivo");
+                }
+            }
+            Set<Long> uniqueIds = new HashSet<>(request.serviceIds());
+            if (uniqueIds.size() != request.serviceIds().size()) {
+                stateCoordinator.validateCanConfirm(id);
+                throw new IllegalArgumentException("No se permiten IDs de servicios duplicados");
+            }
+        }
+
         List<ProductionReservationItemDTO> sortedItems = request.items().stream()
                 .sorted(Comparator.comparing(ProductionReservationItemDTO::equipmentId))
                 .toList();
@@ -200,8 +217,46 @@ public class ProductionService {
             itemsJson = "[]";
         }
 
-        // 1. Coordinar intención de confirmación de forma atómica durable (vía REQUIRES_NEW)
-        ProductionStateCoordinator.ConfirmationClaim claim = stateCoordinator.beginConfirmation(id, itemsJson);
+        // Fast-path / Idempotencia: si la producción ya está confirmada o cancelada, resolver o rechazar sin contactar a Catalog
+        Optional<ProductionStateCoordinator.ConfirmationClaim> fastClaim =
+                stateCoordinator.checkFastReplayOrInvalid(id, itemsJson, request.serviceIds());
+        if (fastClaim.isPresent() && fastClaim.get().alreadyConfirmed()) {
+            return toResponseDTO(fastClaim.get().production());
+        }
+
+        // Para nuevas confirmaciones: validación remota contra Catalog (fuera de transacciones y sin locks abiertos)
+        List<cl.duoc.eventomax.productions.dto.ContractedServiceDto> contractedServices = new ArrayList<>();
+        if (request.serviceIds() != null && !request.serviceIds().isEmpty()) {
+            Set<Long> uniqueIds = new HashSet<>(request.serviceIds());
+            for (Long sId : uniqueIds.stream().sorted().toList()) {
+                Optional<cl.duoc.eventomax.productions.integration.catalog.dto.CatalogServiceDTO> catalogSvcOpt =
+                        catalogClient.getServiceById(sId);
+                if (catalogSvcOpt.isEmpty()) {
+                    stateCoordinator.validateCanConfirm(id);
+                    throw new IllegalArgumentException("El servicio con ID " + sId + " no existe en el catálogo");
+                }
+                var catalogSvc = catalogSvcOpt.get();
+                if (catalogSvc.active() == null || !catalogSvc.active()) {
+                    stateCoordinator.validateCanConfirm(id);
+                    throw new IllegalArgumentException("El servicio con ID " + sId + " no está activo");
+                }
+                contractedServices.add(new cl.duoc.eventomax.productions.dto.ContractedServiceDto(
+                        catalogSvc.id(),
+                        catalogSvc.name(),
+                        catalogSvc.rate()
+                ));
+            }
+        }
+
+        String servicesJson;
+        try {
+            servicesJson = objectMapper.writeValueAsString(contractedServices);
+        } catch (Exception e) {
+            servicesJson = "[]";
+        }
+
+        // 1. Coordinar intención de confirmación de forma atómica durable bajo row lock (vía REQUIRES_NEW)
+        ProductionStateCoordinator.ConfirmationClaim claim = stateCoordinator.beginConfirmation(id, itemsJson, servicesJson);
         if (claim.alreadyConfirmed()) {
             return toResponseDTO(claim.production());
         }
@@ -225,7 +280,7 @@ public class ProductionService {
                 boolean hasActive = reservations != null && reservations.stream()
                         .anyMatch(r -> "RESERVED".equalsIgnoreCase(r.status()));
                 if (hasActive) {
-                    return completeConfirmationWithCompensationOnFailure(id, actor, generation);
+                    return completeConfirmationWithCompensationOnFailure(id, actor, generation, contractedServices);
                 } else {
                     taskService.markFailed(id, generation, e.getMessage());
                     throw e;
@@ -247,12 +302,13 @@ public class ProductionService {
         }
 
         // 3. Completar confirmación local en una nueva transacción vía stateCoordinator
-        return completeConfirmationWithCompensationOnFailure(id, actor, generation);
+        return completeConfirmationWithCompensationOnFailure(id, actor, generation, contractedServices);
     }
 
-    private ProductionResponseDTO completeConfirmationWithCompensationOnFailure(Long id, String actor, Long generation) {
+    private ProductionResponseDTO completeConfirmationWithCompensationOnFailure(
+            Long id, String actor, Long generation, List<cl.duoc.eventomax.productions.dto.ContractedServiceDto> contractedServices) {
         try {
-            Production saved = stateCoordinator.completeConfirmation(id, actor, generation);
+            Production saved = stateCoordinator.completeConfirmation(id, actor, generation, contractedServices);
             return toResponseDTO(saved);
         } catch (Exception e) {
             boolean canCompensate = stateCoordinator.tryBeginCompensation(
@@ -278,8 +334,16 @@ public class ProductionService {
         }
     }
 
+    private ProductionResponseDTO completeConfirmationWithCompensationOnFailure(Long id, String actor, Long generation) {
+        return completeConfirmationWithCompensationOnFailure(id, actor, generation, null);
+    }
+
     public ProductionResponseDTO completeConfirmation(Long id, String actor, Long generation) {
-        return completeConfirmationWithCompensationOnFailure(id, actor, generation);
+        return completeConfirmationWithCompensationOnFailure(id, actor, generation, null);
+    }
+
+    public ProductionResponseDTO completeConfirmation(Long id, String actor, Long generation, List<cl.duoc.eventomax.productions.dto.ContractedServiceDto> contractedServices) {
+        return completeConfirmationWithCompensationOnFailure(id, actor, generation, contractedServices);
     }
 
     public ProductionResponseDTO completeConfirmation(Long id, String actor) {
