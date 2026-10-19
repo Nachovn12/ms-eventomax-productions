@@ -9,11 +9,15 @@ import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 @Service
 public class InventoryReservationTaskService {
@@ -52,8 +56,64 @@ public class InventoryReservationTaskService {
         return map;
     }
 
+    public boolean areServicesCompatible(String existingJson, String requestedJson) {
+        boolean existingEmpty = existingJson == null || existingJson.trim().isEmpty() || existingJson.trim().equals("[]");
+        boolean requestedEmpty = requestedJson == null || requestedJson.trim().isEmpty() || requestedJson.trim().equals("[]");
+        if (existingEmpty && requestedEmpty) {
+            return true;
+        }
+        if (existingEmpty != requestedEmpty) {
+            return false;
+        }
+        if (existingJson.trim().equals(requestedJson.trim())) {
+            return true;
+        }
+        try {
+            Set<Long> existingIds = parseServicesToIds(existingJson);
+            Set<Long> requestedIds = parseServicesToIds(requestedJson);
+            return existingIds.equals(requestedIds);
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    public boolean areServicesCompatibleWithIds(String existingJson, List<Long> requestedIds) {
+        boolean existingEmpty = existingJson == null || existingJson.trim().isEmpty() || existingJson.trim().equals("[]");
+        boolean requestedEmpty = requestedIds == null || requestedIds.isEmpty();
+        if (existingEmpty && requestedEmpty) {
+            return true;
+        }
+        if (existingEmpty != requestedEmpty) {
+            return false;
+        }
+        try {
+            Set<Long> existing = parseServicesToIds(existingJson);
+            Set<Long> requested = new HashSet<>(requestedIds);
+            return existing.equals(requested);
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private Set<Long> parseServicesToIds(String json) throws Exception {
+        if (json == null || json.trim().isEmpty() || json.trim().equals("[]")) {
+            return Collections.emptySet();
+        }
+        TypeReference<List<cl.duoc.eventomax.productions.dto.ContractedServiceDto>> typeRef =
+                new TypeReference<>() {};
+        List<cl.duoc.eventomax.productions.dto.ContractedServiceDto> list = objectMapper.readValue(json, typeRef);
+        return list.stream()
+                .map(cl.duoc.eventomax.productions.dto.ContractedServiceDto::serviceId)
+                .collect(Collectors.toSet());
+    }
+
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public InventoryReservationTask initOrUpdateIntent(Long productionId, String itemsJson) {
+        return initOrUpdateIntent(productionId, itemsJson, null);
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public InventoryReservationTask initOrUpdateIntent(Long productionId, String itemsJson, String servicesJson) {
         InventoryReservationTask task = taskRepository.findByProductionId(productionId)
                 .orElseGet(() -> new InventoryReservationTask(productionId, itemsJson, InventoryReservationTask.STATUS_PENDING));
         if (task.getId() != null) {
@@ -65,6 +125,7 @@ public class InventoryReservationTaskService {
             }
         }
         task.setItemsJson(itemsJson);
+        task.setServicesJson(servicesJson);
         task.setStatus(InventoryReservationTask.STATUS_PROCESSING);
         task.setAttemptCount(task.getAttemptCount() == null ? 1 : task.getAttemptCount() + 1);
         task.setLastError(null);

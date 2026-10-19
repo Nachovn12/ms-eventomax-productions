@@ -4,6 +4,7 @@ import cl.duoc.eventomax.productions.dto.ProductionReservationItemDTO;
 import cl.duoc.eventomax.productions.integration.catalog.dto.CatalogReservationItemRequest;
 import cl.duoc.eventomax.productions.integration.catalog.dto.CatalogReservationRequest;
 import cl.duoc.eventomax.productions.integration.catalog.dto.CatalogReservationResponseDTO;
+import cl.duoc.eventomax.productions.integration.catalog.dto.CatalogServiceDTO;
 import cl.duoc.eventomax.productions.integration.catalog.exception.CatalogUnavailableException;
 import cl.duoc.eventomax.productions.integration.catalog.exception.InventoryReservationException;
 import org.springframework.core.ParameterizedTypeReference;
@@ -13,6 +14,7 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 
 import java.util.List;
+import java.util.Optional;
 
 @Component
 public class CatalogClient {
@@ -104,6 +106,63 @@ public class CatalogClient {
                     .toBodilessEntity();
         } catch (org.springframework.web.client.ResourceAccessException e) {
             throw new CatalogUnavailableException("Connection to Catalog service failed during compensation");
+        }
+    }
+
+    public Optional<CatalogServiceDTO> getServiceById(Long serviceId) {
+        try {
+            CatalogServiceDTO result = catalogRestClient.get()
+                    .uri("/api/catalog/services/{id}", serviceId)
+                    .headers(headers -> {
+                        var trace = cl.duoc.eventomax.productions.tracing.TraceContext.current();
+                        headers.set("X-Trace-Id", trace.traceId());
+                        headers.set("X-Correlation-Id", trace.correlationId());
+                    })
+                    .retrieve()
+                    .onStatus(status -> status.value() == 404, (req, res) -> {})
+                    .onStatus(HttpStatusCode::is5xxServerError, (req, res) -> {
+                        throw new CatalogUnavailableException("Catalog service is unavailable");
+                    })
+                    .body(CatalogServiceDTO.class);
+            return Optional.ofNullable(result);
+        } catch (CatalogUnavailableException e) {
+            throw e;
+        } catch (org.springframework.web.client.HttpClientErrorException.NotFound e) {
+            return Optional.empty();
+        } catch (org.springframework.web.client.ResourceAccessException e) {
+            throw new CatalogUnavailableException("Connection to Catalog service failed");
+        } catch (Exception e) {
+            if (e.getCause() instanceof CatalogUnavailableException cue) {
+                throw cue;
+            }
+            throw new CatalogUnavailableException("Error querying Catalog service: " + e.getMessage());
+        }
+    }
+
+    public List<CatalogServiceDTO> getServices() {
+        try {
+            List<CatalogServiceDTO> result = catalogRestClient.get()
+                    .uri("/api/catalog/services")
+                    .headers(headers -> {
+                        var trace = cl.duoc.eventomax.productions.tracing.TraceContext.current();
+                        headers.set("X-Trace-Id", trace.traceId());
+                        headers.set("X-Correlation-Id", trace.correlationId());
+                    })
+                    .retrieve()
+                    .onStatus(HttpStatusCode::is5xxServerError, (req, res) -> {
+                        throw new CatalogUnavailableException("Catalog service is unavailable");
+                    })
+                    .body(new ParameterizedTypeReference<List<CatalogServiceDTO>>() {});
+            return result != null ? result : List.of();
+        } catch (CatalogUnavailableException e) {
+            throw e;
+        } catch (org.springframework.web.client.ResourceAccessException e) {
+            throw new CatalogUnavailableException("Connection to Catalog service failed");
+        } catch (Exception e) {
+            if (e.getCause() instanceof CatalogUnavailableException cue) {
+                throw cue;
+            }
+            throw new CatalogUnavailableException("Error querying Catalog services: " + e.getMessage());
         }
     }
 }

@@ -35,6 +35,9 @@ public class InventoryReservationTask {
     @Column(name = "items_json", nullable = false, columnDefinition = "TEXT")
     private String itemsJson;
 
+    @Column(name = "services_json", columnDefinition = "TEXT")
+    private String servicesJson;
+
     @Column(name = "attempt_count", nullable = false)
     private Integer attemptCount = 0;
 
@@ -83,6 +86,8 @@ public class InventoryReservationTask {
     public void setStatus(String status) { this.status = status; }
     public String getItemsJson() { return itemsJson; }
     public void setItemsJson(String itemsJson) { this.itemsJson = itemsJson; }
+    public String getServicesJson() { return servicesJson; }
+    public void setServicesJson(String servicesJson) { this.servicesJson = servicesJson; }
     public Integer getAttemptCount() { return attemptCount; }
     public void setAttemptCount(Integer attemptCount) { this.attemptCount = attemptCount; }
     public Long getReservationGeneration() { return reservationGeneration; }
