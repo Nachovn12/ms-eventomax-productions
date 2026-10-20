@@ -15,7 +15,7 @@ En la arquitectura híbrida de **EventoMax EP2**, cumple un doble rol de mensaje
    - Notificación por correo de cambios de estado (`email.send` → `q.cmd.email`).
    - Asignación de tickets de cuadrilla técnica al pasar a ejecución (`crew.ticket` → `q.cmd.crew`).
    - Generación del **Acta y Cotización Formal de Cierre en PDF** al cerrar la producción (`quote.gen` → `q.cmd.quote`), adjuntando un contrato enriquecido de 16 campos con servicios contratados, contacto del organizador enmascarado y línea de tiempo transaccional verificable.
-2. **Productor de Eventos de Dominio hacia Apache Kafka (`productions.events`):** Implementa el patrón **Transactional Outbox** sobre PostgreSQL (`outbox_events` + `OutboxRelay`) para alimentar de manera asíncrona las proyecciones CQRS de `ms-eventomax-report` y la trazabilidad inmutable de `ms-eventomax-audit`.
+2. **Productor de Eventos de Dominio hacia Apache Kafka (`productions.events`):** Implementa el patrón **Transactional Outbox** sobre PostgreSQL (`outbox_events` + `OutboxRelay`) para alimentar de manera asíncrona las proyecciones CQRS de `ms-eventomax-report` y la trazabilidad inmutable de `ms-eventomax-audit`. En despliegues AWS EC2 donde Kafka se mantiene apagado (`KAFKA_OUTBOX_RELAY_ENABLED=false`), todos los eventos de negocio (`ProductionCreated`, `ProductionStatusChanged`) se persisten íntegramente en `outbox_events` con estado `PENDING` (`retries=0`), sin perder ningún evento y permitiendo que el flujo completo de producción, comandos RabbitMQ y generación de Acta PDF opere al 100%.
 
 ---
 
