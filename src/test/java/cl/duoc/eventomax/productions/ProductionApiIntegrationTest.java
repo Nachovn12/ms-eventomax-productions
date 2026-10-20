@@ -1,5 +1,6 @@
 package cl.duoc.eventomax.productions;
 
+import cl.duoc.eventomax.productions.integration.catalog.CatalogClient;
 import cl.duoc.eventomax.productions.model.Production;
 import cl.duoc.eventomax.productions.model.ProductionStatus;
 import cl.duoc.eventomax.productions.repository.ProductionRepository;
@@ -17,6 +18,7 @@ import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -33,6 +35,22 @@ class ProductionApiIntegrationTest {
     @Autowired ProductionRepository repository;
     @Autowired JdbcTemplate jdbc;
 
+    @MockitoBean
+    CatalogClient catalogClient;
+
+    @MockitoBean
+    org.springframework.security.oauth2.jwt.JwtDecoder jwtDecoder;
+
+    @BeforeEach
+    void setupSecurity() {
+        org.springframework.security.oauth2.jwt.Jwt jwt = org.springframework.security.oauth2.jwt.Jwt.withTokenValue("token")
+                .header("alg", "none")
+                .claim("sub", "actor-123")
+                .build();
+        org.springframework.security.core.context.SecurityContextHolder.getContext().setAuthentication(
+                new org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken(jwt));
+    }
+
     @BeforeEach
     void clearProductions() {
         repository.deleteAll();
@@ -48,19 +66,20 @@ class ProductionApiIntegrationTest {
                 LocalDateTime.of(2000, 1, 1, 0, 0), id);
 
         String updated = mvc.perform(put("/api/productions/{id}/status", id)
-                        .contentType(MediaType.APPLICATION_JSON).content("{\"status\":\"CONFIRMADO\"}"))
+                        .with(org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt().jwt(b -> b.claim("sub", "actor-123")).authorities(new org.springframework.security.core.authority.SimpleGrantedAuthority("SCOPE_access_as_user"), new org.springframework.security.core.authority.SimpleGrantedAuthority("ROLE_Productor")))
+                        .contentType(MediaType.APPLICATION_JSON).content("{\"status\":\"CONFIRMADO\", \"items\": [{\"equipmentId\": 1, \"quantity\": 2}]}"))
                 .andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
         LocalDateTime persisted = timestamp(id, "updated_at");
         assertThat(persisted).isAfter(LocalDateTime.of(2000, 1, 1, 0, 0));
         assertThat(LocalDateTime.parse(JsonPath.read(updated, "$.updatedAt"))).isEqualTo(persisted);
 
         for (int i = 0; i < 2; i++) {
-            String read = mvc.perform(get("/api/productions/{id}", id))
+            String read = mvc.perform(get("/api/productions/{id}", id).with(org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt().jwt(b -> b.claim("sub", "actor-123")).authorities(new org.springframework.security.core.authority.SimpleGrantedAuthority("SCOPE_access_as_user"), new org.springframework.security.core.authority.SimpleGrantedAuthority("ROLE_Productor"))))
                     .andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
             assertThat(LocalDateTime.parse(JsonPath.read(read, "$.updatedAt"))).isEqualTo(persisted);
         }
-        mvc.perform(get("/api/productions")).andExpect(status().isOk());
-        mvc.perform(get("/api/productions").param("status", "CONFIRMADO")).andExpect(status().isOk());
+        mvc.perform(get("/api/productions").with(org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt().jwt(b -> b.claim("sub", "actor-123")).authorities(new org.springframework.security.core.authority.SimpleGrantedAuthority("SCOPE_access_as_user"), new org.springframework.security.core.authority.SimpleGrantedAuthority("ROLE_Productor")))).andExpect(status().isOk());
+        mvc.perform(get("/api/productions").param("status", "CONFIRMADO").with(org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt().jwt(b -> b.claim("sub", "actor-123")).authorities(new org.springframework.security.core.authority.SimpleGrantedAuthority("SCOPE_access_as_user"), new org.springframework.security.core.authority.SimpleGrantedAuthority("ROLE_Productor")))).andExpect(status().isOk());
         assertThat(timestamp(id, "created_at")).isEqualTo(createdAt);
         assertThat(timestamp(id, "updated_at")).isEqualTo(persisted);
     }
@@ -72,7 +91,7 @@ class ProductionApiIntegrationTest {
         save("Early", LocalDateTime.of(2099, 1, 1, 0, 0), ProductionStatus.SOLICITADO);
         save("Middle", LocalDateTime.of(2099, 6, 1, 0, 0), ProductionStatus.CONFIRMADO);
         save("Late", LocalDateTime.of(2099, 12, 1, 0, 0), ProductionStatus.CONFIRMADO);
-        var request = get("/api/productions");
+        var request = get("/api/productions").with(org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt().jwt(b -> b.claim("sub", "actor-123")).authorities(new org.springframework.security.core.authority.SimpleGrantedAuthority("SCOPE_access_as_user"), new org.springframework.security.core.authority.SimpleGrantedAuthority("ROLE_Productor")));
         if (state != null) request.param("status", state);
         if (from != null) request.param("from", from);
         if (to != null) request.param("to", to);
@@ -96,7 +115,8 @@ class ProductionApiIntegrationTest {
     @Test
     void reversedDateRangeReturns400() throws Exception {
         mvc.perform(get("/api/productions").param("from", "2099-12-01T00:00:00")
-                        .param("to", "2099-01-01T00:00:00"))
+                        .param("to", "2099-01-01T00:00:00")
+                        .with(org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt().jwt(b -> b.claim("sub", "actor-123")).authorities(new org.springframework.security.core.authority.SimpleGrantedAuthority("SCOPE_access_as_user"), new org.springframework.security.core.authority.SimpleGrantedAuthority("ROLE_Productor"))))
                 .andExpect(status().isBadRequest()).andExpect(jsonPath("$.status").value(400));
     }
 

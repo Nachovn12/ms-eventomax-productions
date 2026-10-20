@@ -13,8 +13,53 @@ spring:
   flyway:
     enabled: true
 
+  rabbitmq:
+    host: ${RABBITMQ_HOST:localhost}
+    port: ${RABBITMQ_PORT:5672}
+    virtual-host: ${RABBITMQ_VHOST:/}
+    username: ${RABBITMQ_USERNAME}
+    password: ${RABBITMQ_PASSWORD}
+    publisher-confirm-type: correlated
+    publisher-returns: true
+    template:
+      mandatory: true
+
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS}
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+      properties:
+        spring.json.add.type.headers: false
+    admin:
+      auto-create: false
+
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: ${ENTRA_ISSUER_URI}
+
 management:
   endpoints:
     web:
       exposure:
         include: health,info
+
+eventomax:
+  security:
+    jwt:
+      audience: ${ENTRA_AUDIENCE}
+  kafka:
+    topic:
+      productions: ${KAFKA_TOPIC_PRODUCTIONS:productions.events}
+  clients:
+    catalog:
+      base-url: ${CATALOG_BASE_URL}
+  messaging:
+    rabbitmq:
+      exchange: cmd.direct
+      routing-key:
+        email: email.send
+        crew: crew.ticket
+        quote: quote.gen

@@ -13,14 +13,35 @@ import org.springframework.stereotype.Repository;
 @Repository
 public interface ProductionRepository extends JpaRepository<Production, Long>, JpaSpecificationExecutor<Production> {
 
+    @org.springframework.data.jpa.repository.Lock(jakarta.persistence.LockModeType.PESSIMISTIC_WRITE)
+    @org.springframework.data.jpa.repository.Query("select p from Production p where p.id = :id")
+    java.util.Optional<Production> findForUpdate(@org.springframework.data.repository.query.Param("id") Long id);
+
     default List<Production> findByFilters(ProductionStatus status, LocalDateTime from, LocalDateTime to) {
-        // Bind only supplied filters: PostgreSQL cannot infer timestamp parameters in '? IS NULL'.
+        return findByFilters(status, from, to, (String) null);
+    }
+
+    default List<Production> findByFilters(ProductionStatus status, LocalDateTime from, LocalDateTime to, String organizerId) {
+        if (organizerId != null && !organizerId.isBlank()) {
+            return findByFilters(status, from, to, java.util.List.of(organizerId.trim()));
+        }
+        return findByFilters(status, from, to, (java.util.Collection<String>) null);
+    }
+
+    default List<Production> findByFilters(ProductionStatus status, LocalDateTime from, LocalDateTime to, java.util.Collection<String> organizerIds) {
         return findAll((root, query, builder) -> {
             List<Predicate> predicates = new ArrayList<>();
+            if (organizerIds != null && !organizerIds.isEmpty()) {
+                predicates.add(root.get("organizerId").in(organizerIds));
+            }
             if (status != null) predicates.add(builder.equal(root.get("status"), status));
             if (from != null) predicates.add(builder.greaterThanOrEqualTo(root.get("scheduledAt"), from));
             if (to != null) predicates.add(builder.lessThanOrEqualTo(root.get("scheduledAt"), to));
             return builder.and(predicates.toArray(Predicate[]::new));
         });
     }
+
+    List<Production> findByOrganizerId(String organizerId);
+
+    List<Production> findByOrganizerIdIn(java.util.Collection<String> organizerIds);
 }
