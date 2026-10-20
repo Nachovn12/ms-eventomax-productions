@@ -3,12 +3,17 @@ services:
     build:
       context: .
     container_name: ms-eventomax-productions
+    mem_limit: 640m
     expose:
       - "8080"
     environment:
       DB_URL: ${DB_URL:?DB_URL is required}
       DB_USER: ${DB_USER:?DB_USER is required}
       DB_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is required}
+      SPRING_DATASOURCE_HIKARI_SCHEMA: ${DB_SCHEMA:-productions}
+      SPRING_FLYWAY_DEFAULT_SCHEMA: ${DB_SCHEMA:-productions}
+      SPRING_FLYWAY_SCHEMAS: ${DB_SCHEMA:-productions}
+      SPRING_FLYWAY_CREATE_SCHEMAS: ${FLYWAY_CREATE_SCHEMAS:-true}
       CATALOG_BASE_URL: ${CATALOG_BASE_URL:?CATALOG_BASE_URL is required}
       SPRING_RABBITMQ_ADDRESSES: ${SPRING_RABBITMQ_ADDRESSES:-rabbitmq-1:5672,rabbitmq-2:5672}
       RABBITMQ_HOST: ${RABBITMQ_HOST:-rabbitmq-1}
@@ -22,6 +27,12 @@ services:
       KAFKA_TOPIC_PRODUCTIONS: ${KAFKA_TOPIC_PRODUCTIONS:-productions.events}
       SPRING_PROFILES_ACTIVE: prod
       JAVA_TOOL_OPTIONS: ${JAVA_TOOL_OPTIONS:--XX:InitialRAMPercentage=25.0 -XX:MaxRAMPercentage=65.0 -XX:+ExitOnOutOfMemoryError}
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/actuator/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
     networks:
       - eventomax-net
     restart: unless-stopped

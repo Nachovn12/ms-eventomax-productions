@@ -1,5 +1,6 @@
 package cl.duoc.eventomax.productions;
 
+import cl.duoc.eventomax.productions.dto.ContractedServiceDto;
 import cl.duoc.eventomax.productions.dto.ProductionResponseDTO;
 import cl.duoc.eventomax.productions.dto.ProductionStatusUpdateDTO;
 import cl.duoc.eventomax.productions.model.ProductionStatus;
@@ -14,6 +15,7 @@ import org.springframework.http.MediaType;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
@@ -457,6 +459,7 @@ class ProductionControllerTest {
                 .andExpect(jsonPath("$.error").value("Unsupported Media Type"))
                 .andExpect(jsonPath("$.message").value("Media type not supported. Please use application/json"));
     }
+
     @Test
     void unsupportedMethodReturns405() throws Exception {
         mockMvc.perform(delete("/api/productions"))
@@ -479,5 +482,59 @@ class ProductionControllerTest {
                 .andExpect(status().isInternalServerError())
                 .andExpect(jsonPath("$.message").value("An unexpected error occurred"))
                 .andExpect(jsonPath("$.timestamp").exists());
+    }
+
+    @Test
+    void getContractedServices_existingProduction_returns200() throws Exception {
+        given(service.getProductionById(1L)).willReturn(Optional.of(sampleResponse()));
+        given(service.getContractedServices(1L)).willReturn(List.of(
+                new ContractedServiceDto(10L, "Sonido Line Array", new BigDecimal("250.00"))
+        ));
+
+        mockMvc.perform(get("/api/productions/1/services"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$", hasSize(1)))
+                .andExpect(jsonPath("$[0].serviceId").value(10))
+                .andExpect(jsonPath("$[0].serviceName").value("Sonido Line Array"));
+    }
+
+    @Test
+    void getContractedServices_missingProduction_returns404() throws Exception {
+        given(service.getProductionById(99L)).willReturn(Optional.empty());
+
+        mockMvc.perform(get("/api/productions/99/services"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.status").value(404));
+    }
+
+    @Test
+    void republishQuoteCommand_closedProduction_returns200() throws Exception {
+        given(service.republishQuoteCommand(eq(1L), any())).willReturn(true);
+
+        mockMvc.perform(post("/api/productions/1/quote-command/republish"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.productionId").value(1))
+                .andExpect(jsonPath("$.command").value("GenerateClosingQuote"))
+                .andExpect(jsonPath("$.republished").value(true));
+    }
+
+    @Test
+    void republishQuoteCommand_missingProduction_returns404() throws Exception {
+        given(service.republishQuoteCommand(eq(99L), any()))
+                .willThrow(new cl.duoc.eventomax.productions.service.ResourceNotFoundException("Producción no encontrada"));
+
+        mockMvc.perform(post("/api/productions/99/quote-command/republish"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.status").value(404));
+    }
+
+    @Test
+    void republishQuoteCommand_nonClosedProduction_returns409() throws Exception {
+        given(service.republishQuoteCommand(eq(1L), any()))
+                .willThrow(new InvalidTransitionException("La producción no está en estado CERRADO"));
+
+        mockMvc.perform(post("/api/productions/1/quote-command/republish"))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.status").value(409));
     }
 }

@@ -1,5 +1,6 @@
 package cl.duoc.eventomax.productions.service;
 
+import cl.duoc.eventomax.productions.dto.ContractedServiceDto;
 import cl.duoc.eventomax.productions.dto.ProductionRequestDTO;
 import cl.duoc.eventomax.productions.dto.ProductionReservationItemDTO;
 import cl.duoc.eventomax.productions.dto.ProductionResponseDTO;
@@ -9,11 +10,13 @@ import cl.duoc.eventomax.productions.event.ProductionCreatedEvent;
 import cl.duoc.eventomax.productions.integration.catalog.CatalogClient;
 import cl.duoc.eventomax.productions.integration.catalog.dto.CatalogReservationResponseDTO;
 import cl.duoc.eventomax.productions.integration.catalog.exception.InventoryReservationException;
+import cl.duoc.eventomax.productions.messaging.rabbitmq.ProductionQuoteCommandListener;
 import cl.duoc.eventomax.productions.model.OutboxEvent;
 import cl.duoc.eventomax.productions.model.Production;
 import cl.duoc.eventomax.productions.model.ProductionStatus;
 import cl.duoc.eventomax.productions.repository.InventoryReservationTaskRepository;
 import cl.duoc.eventomax.productions.repository.OutboxEventRepository;
+import cl.duoc.eventomax.productions.repository.ProductionContractedServiceRepository;
 import cl.duoc.eventomax.productions.repository.ProductionRepository;
 import cl.duoc.eventomax.productions.tracing.TraceContext;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -21,6 +24,7 @@ import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -47,6 +51,8 @@ public class ProductionService {
     private final InventoryReservationTaskRepository inventoryReservationTaskRepository;
     private final InventoryReservationTaskService taskService;
     private final ProductionStateCoordinator stateCoordinator;
+    private final ProductionContractedServiceRepository contractedServiceRepository;
+    private final ProductionQuoteCommandListener quoteCommandListener;
     private final ObjectMapper objectMapper;
 
     public ProductionService(
@@ -57,6 +63,21 @@ public class ProductionService {
             InventoryReservationTaskRepository inventoryReservationTaskRepository,
             InventoryReservationTaskService taskService,
             ProductionStateCoordinator stateCoordinator) {
+        this(repository, eventPublisher, catalogClient, outboxEventRepository,
+                inventoryReservationTaskRepository, taskService, stateCoordinator, null, null);
+    }
+
+    @Autowired
+    public ProductionService(
+            ProductionRepository repository,
+            ApplicationEventPublisher eventPublisher,
+            CatalogClient catalogClient,
+            OutboxEventRepository outboxEventRepository,
+            InventoryReservationTaskRepository inventoryReservationTaskRepository,
+            InventoryReservationTaskService taskService,
+            ProductionStateCoordinator stateCoordinator,
+            @Autowired(required = false) ProductionContractedServiceRepository contractedServiceRepository,
+            @Autowired(required = false) ProductionQuoteCommandListener quoteCommandListener) {
         this.repository = repository;
         this.eventPublisher = eventPublisher;
         this.catalogClient = catalogClient;
@@ -64,6 +85,8 @@ public class ProductionService {
         this.inventoryReservationTaskRepository = inventoryReservationTaskRepository;
         this.taskService = taskService;
         this.stateCoordinator = stateCoordinator;
+        this.contractedServiceRepository = contractedServiceRepository;
+        this.quoteCommandListener = quoteCommandListener;
         this.objectMapper = new ObjectMapper()
                 .registerModule(new JavaTimeModule())
                 .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
@@ -129,6 +152,37 @@ public class ProductionService {
     public Optional<ProductionResponseDTO> getProductionById(Long id) {
         return repository.findById(id)
                 .map(this::toResponseDTO);
+    }
+
+    @Transactional(readOnly = true)
+    public List<ContractedServiceDto> getContractedServices(Long productionId) {
+        if (repository.findById(productionId).isEmpty()) {
+            throw new ResourceNotFoundException("Produccion no encontrada con id: " + productionId);
+        }
+        if (contractedServiceRepository == null) {
+            return List.of();
+        }
+        return contractedServiceRepository.findByProductionId(productionId).stream()
+                .map(s -> new ContractedServiceDto(
+                        s.getServiceId(),
+                        s.getServiceName(),
+                        s.getUnitPrice()))
+                .toList();
+    }
+
+    @Transactional(readOnly = true)
+    public boolean republishQuoteCommand(Long productionId, String actor) {
+        Production production = repository.findById(productionId)
+                .orElseThrow(() -> new ResourceNotFoundException("Produccion no encontrada con id: " + productionId));
+        if (production.getStatus() != ProductionStatus.CERRADO) {
+            throw new InvalidTransitionException(
+                    "Solo se puede republicar el comando de acta PDF cuando la produccion esta en estado CERRADO (actual: "
+                            + production.getStatus() + ")");
+        }
+        if (quoteCommandListener == null) {
+            throw new IllegalStateException("Listener de publicacion de acta PDF no disponible");
+        }
+        return quoteCommandListener.republishQuoteCommand(productionId, actor);
     }
 
     @Transactional(readOnly = true)

@@ -2,11 +2,14 @@ package cl.duoc.eventomax.productions;
 
 import org.flywaydb.core.Flyway;
 import org.flywaydb.core.api.output.MigrateResult;
-import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.testcontainers.containers.PostgreSQLContainer;
+import org.testcontainers.utility.DockerImageName;
 
 import java.io.File;
+import java.net.InetSocketAddress;
+import java.net.Socket;
 import java.nio.file.Files;
 import java.sql.Connection;
 import java.sql.DriverManager;
@@ -21,12 +24,22 @@ public class FlywayNativePreflightTest {
     @DisplayName("Preflight 1: Flyway nativo aplica V1..V7 en base descartable con user_oid e indices")
     void testFlywayV7OnDisposable() throws Exception {
         File pwFile = new File("C:/Users/Nacho/Desktop/Cloud Native/.local-cert/postgres_password.txt");
-        Assumptions.assumeTrue(pwFile.exists(), "Skipping local PostgreSQL disposable preflight in CI environment");
-        String password = Files.readString(pwFile.toPath()).trim();
-        String jdbcUrl = "jdbc:postgresql://127.0.0.1:5432/eventomax_test_v7_disposable";
+        if (pwFile.exists() && isLocalPostgresReachable()) {
+            String password = Files.readString(pwFile.toPath()).trim();
+            String jdbcUrl = "jdbc:postgresql://127.0.0.1:5432/eventomax_test_v7_disposable";
+            verifyFlywayV7(jdbcUrl, "postgres", password);
+            return;
+        }
 
+        try (PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>(DockerImageName.parse("postgres:15-alpine"))) {
+            postgres.start();
+            verifyFlywayV7(postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword());
+        }
+    }
+
+    private void verifyFlywayV7(String jdbcUrl, String username, String password) throws Exception {
         Flyway flyway = Flyway.configure()
-                .dataSource(jdbcUrl, "postgres", password)
+                .dataSource(jdbcUrl, username, password)
                 .locations("classpath:db/migration")
                 .cleanDisabled(true)
                 .load();
@@ -36,7 +49,7 @@ public class FlywayNativePreflightTest {
         String currentVersion = flyway.info().current() != null ? flyway.info().current().getVersion().getVersion() : null;
         assertEquals("7", currentVersion != null ? currentVersion : result.targetSchemaVersion);
 
-        try (Connection conn = DriverManager.getConnection(jdbcUrl, "postgres", password);
+        try (Connection conn = DriverManager.getConnection(jdbcUrl, username, password);
              Statement stmt = conn.createStatement()) {
 
             // Verificar tabla organizer_contacts y columna user_oid
@@ -63,5 +76,13 @@ public class FlywayNativePreflightTest {
             }
         }
     }
-}
 
+    private static boolean isLocalPostgresReachable() {
+        try (Socket socket = new Socket()) {
+            socket.connect(new InetSocketAddress("127.0.0.1", 5432), 500);
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+}
