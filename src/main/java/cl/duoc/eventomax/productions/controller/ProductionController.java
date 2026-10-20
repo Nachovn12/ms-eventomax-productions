@@ -1,5 +1,6 @@
 package cl.duoc.eventomax.productions.controller;
 
+import cl.duoc.eventomax.productions.dto.ContractedServiceDto;
 import cl.duoc.eventomax.productions.dto.ProductionRequestDTO;
 import cl.duoc.eventomax.productions.dto.ProductionResponseDTO;
 import cl.duoc.eventomax.productions.dto.ProductionStatusUpdateDTO;
@@ -15,6 +16,7 @@ import org.springframework.web.bind.annotation.*;
 
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Map;
 
 import io.swagger.v3.oas.annotations.tags.Tag;
 import io.swagger.v3.oas.annotations.Operation;
@@ -134,6 +136,30 @@ public class ProductionController {
     }
 
 
+    @Operation(summary = "Consultar servicios contratados de una producción", description = "Devuelve los servicios contratados asociados a la producción, aplicando aislamiento por organizador.")
+    @ApiResponse(responseCode = "200", description = "Listado de servicios contratados")
+    @ApiResponse(responseCode = "403", description = "Sin permisos para consultar esta producción", content = @Content)
+    @ApiResponse(responseCode = "404", description = "Producción no encontrada", content = @Content)
+    @GetMapping("/{id}/services")
+    public ResponseEntity<List<ContractedServiceDto>> getContractedServices(
+            @Parameter(description = "ID de la producción") @PathVariable Long id,
+            @org.springframework.security.core.annotation.AuthenticationPrincipal org.springframework.security.oauth2.jwt.Jwt jwt,
+            org.springframework.security.core.Authentication authentication) {
+
+        ProductionResponseDTO production = service.getProductionById(id)
+                .orElseThrow(() -> new ResourceNotFoundException("Produccion no encontrada con id: " + id));
+
+        if (cl.duoc.eventomax.productions.security.SecurityUtils.isOrganizerOnly(authentication, jwt)) {
+            if (!organizerContactService.isAuthorizedForOrganizer(production.organizerId(), authentication, jwt)) {
+                throw new org.springframework.security.access.AccessDeniedException(
+                        "No tiene permisos para acceder a esta produccion");
+            }
+        }
+
+        return ResponseEntity.ok(service.getContractedServices(id));
+    }
+
+
     @Operation(summary = "Actualizar estado de producción", description = "Cambia el estado de una producción validando las reglas de transición. Estados válidos: SOLICITADO, CONFIRMADO, EN_MONTAJE, EN_EJECUCION, CERRADO, CANCELADO.")
     @ApiResponse(responseCode = "200", description = "Estado actualizado exitosamente",
                  content = @Content(schema = @Schema(implementation = ProductionResponseDTO.class)))
@@ -165,5 +191,35 @@ public class ProductionController {
         ProductionResponseDTO updated = service.updateStatus(id, request, actor);
         return ResponseEntity.ok(updated);
 
+    }
+
+
+    @Operation(summary = "Republicar comando de acta PDF (re-drive operativo)", description = "Republica el comando enriquecido GenerateClosingQuote hacia RabbitMQ para una producción en estado CERRADO. Restringido a Admin y Productor.")
+    @ApiResponse(responseCode = "200", description = "Comando republicado exitosamente")
+    @ApiResponse(responseCode = "403", description = "Sin autorización administrativa/productor", content = @Content)
+    @ApiResponse(responseCode = "404", description = "Producción no encontrada", content = @Content)
+    @ApiResponse(responseCode = "409", description = "La producción no se encuentra en estado CERRADO", content = @Content)
+    @PostMapping("/{id}/quote-command/republish")
+    public ResponseEntity<Map<String, Object>> republishQuoteCommand(
+            @Parameter(description = "ID de la producción cerrada") @PathVariable Long id,
+            @org.springframework.security.core.annotation.AuthenticationPrincipal org.springframework.security.oauth2.jwt.Jwt jwt,
+            org.springframework.security.core.Authentication authentication) {
+
+        if (jwt == null || jwt.getSubject() == null || jwt.getSubject().isBlank()) {
+            throw new org.springframework.security.access.AccessDeniedException("Identidad requerida");
+        }
+        if (cl.duoc.eventomax.productions.security.SecurityUtils.isOrganizerOnly(authentication, jwt)) {
+            throw new org.springframework.security.access.AccessDeniedException(
+                    "Solo Admin o Productor pueden republicar el comando de acta PDF");
+        }
+
+        String actor = cl.duoc.eventomax.productions.security.SecurityUtils.resolveOwnerId(jwt);
+        boolean published = service.republishQuoteCommand(id, actor);
+        return ResponseEntity.ok(Map.of(
+                "productionId", id,
+                "status", "CERRADO",
+                "command", "GenerateClosingQuote",
+                "republished", published
+        ));
     }
 }
