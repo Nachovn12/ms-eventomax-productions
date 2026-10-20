@@ -18,15 +18,21 @@ public interface ProductionRepository extends JpaRepository<Production, Long>, J
     java.util.Optional<Production> findForUpdate(@org.springframework.data.repository.query.Param("id") Long id);
 
     default List<Production> findByFilters(ProductionStatus status, LocalDateTime from, LocalDateTime to) {
-        return findByFilters(status, from, to, null);
+        return findByFilters(status, from, to, (String) null);
     }
 
     default List<Production> findByFilters(ProductionStatus status, LocalDateTime from, LocalDateTime to, String organizerId) {
-        // Bind only supplied filters: PostgreSQL cannot infer timestamp parameters in '? IS NULL'.
+        if (organizerId != null && !organizerId.isBlank()) {
+            return findByFilters(status, from, to, java.util.List.of(organizerId.trim()));
+        }
+        return findByFilters(status, from, to, (java.util.Collection<String>) null);
+    }
+
+    default List<Production> findByFilters(ProductionStatus status, LocalDateTime from, LocalDateTime to, java.util.Collection<String> organizerIds) {
         return findAll((root, query, builder) -> {
             List<Predicate> predicates = new ArrayList<>();
-            if (organizerId != null && !organizerId.isBlank()) {
-                predicates.add(builder.equal(root.get("organizerId"), organizerId.trim()));
+            if (organizerIds != null && !organizerIds.isEmpty()) {
+                predicates.add(root.get("organizerId").in(organizerIds));
             }
             if (status != null) predicates.add(builder.equal(root.get("status"), status));
             if (from != null) predicates.add(builder.greaterThanOrEqualTo(root.get("scheduledAt"), from));
@@ -36,4 +42,6 @@ public interface ProductionRepository extends JpaRepository<Production, Long>, J
     }
 
     List<Production> findByOrganizerId(String organizerId);
+
+    List<Production> findByOrganizerIdIn(java.util.Collection<String> organizerIds);
 }

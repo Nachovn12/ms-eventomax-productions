@@ -46,4 +46,6 @@ public interface OutboxEventRepository extends JpaRepository<OutboxEvent, UUID> 
                                     @Param("aggregateType") String aggregateType,
                                     @Param("aggregateId") String aggregateId);
 
+    @Query("SELECT o FROM OutboxEvent o WHERE o.aggregateType = 'Production' AND o.aggregateId = :productionId ORDER BY o.createdAt ASC")
+    List<OutboxEvent> findByProductionIdOrderByCreatedAtAsc(@Param("productionId") String productionId);
 }

@@ -51,6 +51,7 @@ class ProductionJwtHttpTest {
     private static final KeyPair KEYS = keys();
     @Autowired MockMvc mvc;
     @MockitoBean ProductionService service;
+    @MockitoBean cl.duoc.eventomax.productions.service.OrganizerContactService organizerContactService;
 
     static KeyPair keys() {
         try { var generator = KeyPairGenerator.getInstance("RSA"); generator.initialize(2048); return generator.generateKeyPair(); }
@@ -70,6 +71,8 @@ class ProductionJwtHttpTest {
         when(service.createProduction(any(), anyString())).thenReturn(response);
         when(service.updateStatus(anyLong(), any(), anyString())).thenReturn(response);
         when(service.getProductionById(1L)).thenReturn(Optional.of(response));
+        when(organizerContactService.isAuthorizedForOrganizer(any(), any(), any())).thenReturn(true);
+        when(organizerContactService.resolveAuthorizedOrganizerIds(any())).thenReturn(List.of("authenticated-actor"));
     }
     String token(String role, Consumer<JWTClaimsSet.Builder> changes) throws Exception {
         var claims = new JWTClaimsSet.Builder().issuer(ISSUER).audience(AUDIENCE).subject("authenticated-actor")

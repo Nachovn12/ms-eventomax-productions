@@ -29,9 +29,12 @@ import io.swagger.v3.oas.annotations.media.Schema;
 public class ProductionController {
 
     private final ProductionService service;
+    private final cl.duoc.eventomax.productions.service.OrganizerContactService organizerContactService;
 
-    public ProductionController(ProductionService service) {
+    public ProductionController(ProductionService service,
+                                cl.duoc.eventomax.productions.service.OrganizerContactService organizerContactService) {
         this.service = service;
+        this.organizerContactService = organizerContactService;
     }
 
 
@@ -53,12 +56,20 @@ public class ProductionController {
 
         ProductionRequestDTO effectiveRequest = request;
         if (organizerOnly) {
-            if (request.organizerId() != null && !request.organizerId().isBlank()
-                    && !request.organizerId().trim().equalsIgnoreCase(actor)) {
-                throw new org.springframework.security.access.AccessDeniedException(
-                        "No esta autorizado para crear producciones en nombre de otro organizador");
+            String targetOrganizerId = (request.organizerId() != null && !request.organizerId().isBlank())
+                    ? request.organizerId().trim()
+                    : null;
+            if (targetOrganizerId != null) {
+                if (!organizerContactService.isAuthorizedForOrganizer(targetOrganizerId, authentication, jwt)) {
+                    throw new org.springframework.security.access.AccessDeniedException(
+                            "No esta autorizado para crear producciones en nombre de este organizador");
+                }
+            } else {
+                targetOrganizerId = organizerContactService.resolveAuthorizedOrganizerIds(jwt).stream()
+                        .findFirst()
+                        .orElse(actor);
             }
-            effectiveRequest = new ProductionRequestDTO(actor, request.name(), request.scheduledAt(), request.location());
+            effectiveRequest = new ProductionRequestDTO(targetOrganizerId, request.name(), request.scheduledAt(), request.location());
         }
 
         ProductionResponseDTO response = service.createProduction(effectiveRequest, actor);
@@ -85,11 +96,8 @@ public class ProductionController {
         boolean organizerOnly = cl.duoc.eventomax.productions.security.SecurityUtils.isOrganizerOnly(authentication, jwt);
 
         if (organizerOnly) {
-            String ownerId = cl.duoc.eventomax.productions.security.SecurityUtils.resolveOwnerId(jwt);
-            if (status == null && from == null && to == null) {
-                return ResponseEntity.ok(service.getAllProductionsForOwner(ownerId));
-            }
-            return ResponseEntity.ok(service.getFilteredProductionsForOwner(status, from, to, ownerId));
+            java.util.List<String> authorizedOrganizerIds = organizerContactService.resolveAuthorizedOrganizerIds(jwt);
+            return ResponseEntity.ok(service.getFilteredProductionsForOrganizers(status, from, to, authorizedOrganizerIds));
         }
 
         if (status == null && from == null && to == null) {
@@ -115,8 +123,7 @@ public class ProductionController {
                 .orElseThrow(() -> new ResourceNotFoundException("Produccion no encontrada con id: " + id));
 
         if (cl.duoc.eventomax.productions.security.SecurityUtils.isOrganizerOnly(authentication, jwt)) {
-            String ownerId = cl.duoc.eventomax.productions.security.SecurityUtils.resolveOwnerId(jwt);
-            if (!production.organizerId().equalsIgnoreCase(ownerId)) {
+            if (!organizerContactService.isAuthorizedForOrganizer(production.organizerId(), authentication, jwt)) {
                 throw new org.springframework.security.access.AccessDeniedException(
                         "No tiene permisos para acceder a esta produccion");
             }
@@ -146,10 +153,9 @@ public class ProductionController {
         }
 
         if (cl.duoc.eventomax.productions.security.SecurityUtils.isOrganizerOnly(authentication, jwt)) {
-            String ownerId = cl.duoc.eventomax.productions.security.SecurityUtils.resolveOwnerId(jwt);
             ProductionResponseDTO existing = service.getProductionById(id)
                     .orElseThrow(() -> new ResourceNotFoundException("Produccion no encontrada con id: " + id));
-            if (!existing.organizerId().equalsIgnoreCase(ownerId)) {
+            if (!organizerContactService.isAuthorizedForOrganizer(existing.organizerId(), authentication, jwt)) {
                 throw new org.springframework.security.access.AccessDeniedException(
                         "No tiene permisos para modificar esta produccion");
             }

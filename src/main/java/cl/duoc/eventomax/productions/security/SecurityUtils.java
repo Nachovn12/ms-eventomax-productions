@@ -71,5 +71,46 @@ public final class SecurityUtils {
 
         return false;
     }
+
+    /**
+     * Resuelve el correo o nombre de usuario principal a partir de los claims habituales de Microsoft Entra ID
+     * (preferred_username, email, upn).
+     */
+    public static String resolveEmail(Jwt jwt) {
+        if (jwt == null) {
+            return null;
+        }
+        String preferredUsername = jwt.getClaimAsString("preferred_username");
+        if (preferredUsername != null && !preferredUsername.isBlank()) {
+            return preferredUsername.trim();
+        }
+        String email = jwt.getClaimAsString("email");
+        if (email != null && !email.isBlank()) {
+            return email.trim();
+        }
+        String upn = jwt.getClaimAsString("upn");
+        if (upn != null && !upn.isBlank()) {
+            return upn.trim();
+        }
+        return null;
+    }
+
+    /**
+     * Extrae el Object ID puro (oid) o sub del usuario desde el JWT.
+     */
+    public static String resolveOid(Jwt jwt) {
+        if (jwt == null) {
+            return null;
+        }
+        String oid = jwt.getClaimAsString("oid");
+        if (oid != null && !oid.isBlank()) {
+            return oid.trim();
+        }
+        String sub = jwt.getSubject();
+        if (sub != null && !sub.isBlank()) {
+            return sub.trim();
+        }
+        return null;
+    }
 }
 

@@ -176,6 +176,40 @@ public class ProductionService {
                 .toList();
     }
 
+    @Transactional(readOnly = true)
+    public List<ProductionResponseDTO> getAllProductionsForOrganizers(java.util.Collection<String> organizerIds) {
+        if (organizerIds == null || organizerIds.isEmpty()) {
+            return List.of();
+        }
+        return repository.findByOrganizerIdIn(organizerIds)
+                .stream()
+                .map(this::toResponseDTO)
+                .toList();
+    }
+
+    @Transactional(readOnly = true)
+    public List<ProductionResponseDTO> getFilteredProductionsForOrganizers(
+            String statusStr, LocalDateTime from, LocalDateTime to, java.util.Collection<String> organizerIds) {
+
+        if (from != null && to != null && from.isAfter(to)) {
+            throw new IllegalArgumentException("La fecha desde no puede ser posterior a la fecha hasta");
+        }
+
+        ProductionStatus status = null;
+        if (statusStr != null && !statusStr.isBlank()) {
+            try {
+                status = ProductionStatus.valueOf(statusStr.toUpperCase());
+            } catch (IllegalArgumentException e) {
+                throw new IllegalArgumentException("Estado de producción no válido: " + statusStr);
+            }
+        }
+
+        return repository.findByFilters(status, from, to, organizerIds)
+                .stream()
+                .map(this::toResponseDTO)
+                .toList();
+    }
+
     public ProductionResponseDTO updateStatus(Long id, ProductionStatusUpdateDTO request, String actor) {
         if (request.status() == ProductionStatus.CONFIRMADO) {
             return handleConfirmation(id, request, actor);

@@ -10,7 +10,8 @@ services:
       DB_USER: ${DB_USER:?DB_USER is required}
       DB_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is required}
       CATALOG_BASE_URL: ${CATALOG_BASE_URL:?CATALOG_BASE_URL is required}
-      RABBITMQ_HOST: ${RABBITMQ_HOST:?RABBITMQ_HOST is required}
+      SPRING_RABBITMQ_ADDRESSES: ${SPRING_RABBITMQ_ADDRESSES:-rabbitmq-1:5672,rabbitmq-2:5672}
+      RABBITMQ_HOST: ${RABBITMQ_HOST:-rabbitmq-1}
       RABBITMQ_PORT: ${RABBITMQ_PORT:-5672}
       RABBITMQ_USERNAME: ${RABBITMQ_USERNAME:?RABBITMQ_USERNAME is required}
       RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:?RABBITMQ_PASSWORD is required}
@@ -20,6 +21,7 @@ services:
       KAFKA_BOOTSTRAP_SERVERS: ${KAFKA_BOOTSTRAP_SERVERS:?KAFKA_BOOTSTRAP_SERVERS is required}
       KAFKA_TOPIC_PRODUCTIONS: ${KAFKA_TOPIC_PRODUCTIONS:-productions.events}
       SPRING_PROFILES_ACTIVE: prod
+      JAVA_TOOL_OPTIONS: ${JAVA_TOOL_OPTIONS:--XX:InitialRAMPercentage=25.0 -XX:MaxRAMPercentage=65.0 -XX:+ExitOnOutOfMemoryError}
     networks:
       - eventomax-net
     restart: unless-stopped

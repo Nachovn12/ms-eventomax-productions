@@ -42,6 +42,9 @@ class ProductionControllerTest {
     ProductionService service;
 
     @MockitoBean
+    cl.duoc.eventomax.productions.service.OrganizerContactService organizerContactService;
+
+    @MockitoBean
     org.springframework.security.oauth2.jwt.JwtDecoder jwtDecoder;
 
     @BeforeEach

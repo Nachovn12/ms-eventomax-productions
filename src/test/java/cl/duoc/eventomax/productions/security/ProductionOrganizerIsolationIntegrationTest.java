@@ -65,6 +65,9 @@ class ProductionOrganizerIsolationIntegrationTest {
     @Autowired
     OutboxEventRepository outboxEventRepository;
 
+    @Autowired
+    cl.duoc.eventomax.productions.repository.OrganizerContactRepository organizerContactRepository;
+
     private final ObjectMapper objectMapper = new ObjectMapper()
             .registerModule(new com.fasterxml.jackson.datatype.jsr310.JavaTimeModule());
 
@@ -127,6 +130,7 @@ class ProductionOrganizerIsolationIntegrationTest {
     void cleanDatabase() {
         outboxEventRepository.deleteAll();
         productionRepository.deleteAll();
+        organizerContactRepository.deleteAll();
     }
 
     @Test
@@ -348,6 +352,102 @@ class ProductionOrganizerIsolationIntegrationTest {
 
         Production current = productionRepository.findById(prodB.getId()).orElseThrow();
         assertEquals(ProductionStatus.CANCELADO, current.getStatus());
+    }
+
+    @Test
+    @DisplayName("12. Organizador con JWT real de Microsoft Entra ID (OID GUID e email) accede a producción de 'org-ep2-demo-001' asociado en organizer_contacts")
+    void organizerWithRealEntraIdJwt_accessesProductionOfBusinessOrganizerId_whenMappedInOrganizerContacts() throws Exception {
+        String entraOid = "d762a6e9-9134-4a4b-97e3-057bfd9d883b";
+        String entraEmail = "organizador.cert@eventomax.cl";
+        String businessOrgId = "org-ep2-demo-001";
+
+        // Registrar contacto autorizado vinculando el business organizerId con el OID y correo de Entra ID
+        cl.duoc.eventomax.productions.model.OrganizerContact contact = new cl.duoc.eventomax.productions.model.OrganizerContact(
+                businessOrgId, entraEmail, "Organizador Certificado", "+56912345678", entraOid, "admin"
+        );
+        organizerContactRepository.save(contact);
+
+        // Crear producción para el negocio 'org-ep2-demo-001'
+        Production prod = new Production(businessOrgId, "Gala Anual EP2", LocalDateTime.now().plusDays(10), "Espacio Riesco");
+        prod = productionRepository.save(prod);
+
+        // Token de Entra ID simulando login real: el OID es un GUID y NO es 'org-ep2-demo-001'
+        JwtRequestPostProcessor entraToken = jwt()
+                .authorities(new SimpleGrantedAuthority("SCOPE_access_as_user"), new SimpleGrantedAuthority("ROLE_Organizador"))
+                .jwt(j -> j
+                        .claim("oid", entraOid)
+                        .claim("tid", "tenant-ep2-duoc")
+                        .claim("preferred_username", entraEmail)
+                        .claim("scp", "access_as_user")
+                        .claim("roles", List.of("Organizador"))
+                        .subject(entraOid));
+
+        // 1. Acceso a detalle por ID de la producción de negocio
+        mockMvc.perform(get("/api/productions/{id}", prod.getId())
+                        .with(entraToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.id", is(prod.getId().intValue())))
+                .andExpect(jsonPath("$.organizerId", is(businessOrgId)))
+                .andExpect(jsonPath("$.name", is("Gala Anual EP2")));
+
+        // 2. Listado de producciones del organizador
+        mockMvc.perform(get("/api/productions")
+                        .with(entraToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$", hasSize(1)))
+                .andExpect(jsonPath("$[0].organizerId", is(businessOrgId)));
+
+        // 3. Consulta de contacto propio
+        mockMvc.perform(get("/api/organizers/{organizerId}/contact", businessOrgId)
+                        .with(entraToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.organizerId", is(businessOrgId)))
+                .andExpect(jsonPath("$.email", is(entraEmail)))
+                .andExpect(jsonPath("$.userOid", is(entraOid)));
+    }
+
+    @Test
+    @DisplayName("13. Organizador ajeno no vinculado recibe 403 Forbidden y no puede ver ni acceder a producción de 'org-ep2-demo-001'")
+    void unrelatedOrganizerWithDifferentEntraIdJwt_isBlockedFromAccessingProductionOfBusinessOrganizerId() throws Exception {
+        String businessOrgId = "org-ep2-demo-001";
+
+        // Contacto autorizado para el organizador legítimo
+        cl.duoc.eventomax.productions.model.OrganizerContact contact = new cl.duoc.eventomax.productions.model.OrganizerContact(
+                businessOrgId, "legit@eventomax.cl", "Legit", "+569111", "legit-oid", "admin"
+        );
+        organizerContactRepository.save(contact);
+
+        Production prod = new Production(businessOrgId, "Gala Anual EP2", LocalDateTime.now().plusDays(10), "Espacio Riesco");
+        prod = productionRepository.save(prod);
+
+        // Token de organizador atacante/ajeno (diferente OID y diferente email)
+        String attackerOid = "99999999-aaaa-bbbb-cccc-999999999999";
+        String attackerEmail = "attacker@other-domain.cl";
+        JwtRequestPostProcessor attackerToken = jwt()
+                .authorities(new SimpleGrantedAuthority("SCOPE_access_as_user"), new SimpleGrantedAuthority("ROLE_Organizador"))
+                .jwt(j -> j
+                        .claim("oid", attackerOid)
+                        .claim("tid", "tenant-ep2-duoc")
+                        .claim("preferred_username", attackerEmail)
+                        .claim("scp", "access_as_user")
+                        .claim("roles", List.of("Organizador"))
+                        .subject(attackerOid));
+
+        // Intento de consultar producción ajena -> 403 Forbidden
+        mockMvc.perform(get("/api/productions/{id}", prod.getId())
+                        .with(attackerToken))
+                .andExpect(status().isForbidden());
+
+        // Intento de consultar contacto ajeno -> 403 Forbidden
+        mockMvc.perform(get("/api/organizers/{organizerId}/contact", businessOrgId)
+                        .with(attackerToken))
+                .andExpect(status().isForbidden());
+
+        // Listar producciones -> Lista vacía (no lista las producciones de 'org-ep2-demo-001')
+        mockMvc.perform(get("/api/productions")
+                        .with(attackerToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$", hasSize(0)));
     }
 }
 
