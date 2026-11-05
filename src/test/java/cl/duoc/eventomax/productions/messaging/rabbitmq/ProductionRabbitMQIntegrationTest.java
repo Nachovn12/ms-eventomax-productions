@@ -310,6 +310,19 @@ class ProductionRabbitMQIntegrationTest {
                     closedQuoteJson.get("eventId").asText(),
                     "El comando de cotización debe tener un eventId único distinto del comando de email"
             );
+
+            // Verificar preservación de outbox_events (PENDING) y republicación PDF sin Kafka disponible
+            var outboxEvents = outboxEventRepository.findByProductionIdOrderByCreatedAtAsc(String.valueOf(created.id()));
+            assertEquals(5, outboxEvents.size(), "Deben preservarse los 5 eventos de negocio en outbox_events aunque Kafka no esté disponible");
+            assertTrue(outboxEvents.stream().allMatch(e -> "PENDING".equals(e.getStatus()) && e.getRetries() == 0),
+                    "Todos los eventos en outbox_events deben permanecer en PENDING sin descartarse cuando el relay Kafka está inactivo");
+            assertEquals(5, quotePayload.get("timeline").size(), "El payload quote.gen debe incluir las 5 transiciones reconstruidas desde outbox_events");
+
+            boolean republished = productionService.republishQuoteCommand(created.id(), "productor-test");
+            assertTrue(republished, "republishQuoteCommand debe publicar exitosamente en RabbitMQ sin Kafka disponible");
+            assertEquals(1, getQueueMessageCount(Q_CMD_QUOTE), "La republicación debe encolar 1 comando en q.cmd.quote");
+            receiveRequiredMessage(Q_CMD_QUOTE);
+
         } finally {
             MDC.clear();
         }

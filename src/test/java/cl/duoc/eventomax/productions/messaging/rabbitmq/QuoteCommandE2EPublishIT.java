@@ -11,8 +11,9 @@ import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.amqp.support.converter.Jackson2JsonMessageConverter;
 
 import java.io.File;
-import java.io.IOException;
 import java.math.BigDecimal;
+import java.net.InetSocketAddress;
+import java.net.Socket;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.MessageDigest;
@@ -34,9 +35,11 @@ public class QuoteCommandE2EPublishIT {
     @Test
     @DisplayName("E2E B3: Publicación real en RabbitMQ, consumo por Notify, generación OpenPDF e idempotencia")
     void testEndToEndQuoteGenerationFlow() throws Exception {
-        // 1. Leer credenciales del entorno local
+        // 1. Leer credenciales del entorno local y verificar disponibilidad del broker en vivo B3
         File credsFile = new File("C:/Users/Nacho/Desktop/Cloud Native/.local-cert/credentials.json");
-        Assumptions.assumeTrue(credsFile.exists(), "Skipping live E2E test when local credentials.json is not present");
+        Assumptions.assumeTrue(
+                credsFile.exists() && isPortOpen("localhost", 25692),
+                "Skipping live B3 E2E test when local credentials.json or live B3 RabbitMQ (localhost:25692) is not active");
         ObjectMapper mapper = new ObjectMapper();
         JsonNode creds = mapper.readTree(credsFile);
         String rmqUser = creds.get("application").get("username").asText();
@@ -157,6 +160,15 @@ public class QuoteCommandE2EPublishIT {
         System.out.println("[E2E B3] Verificación PRO-06: Hashes SHA-256 100% inalterados (" + HISTORICAL_CERT_HASH + ")");
 
         connectionFactory.destroy();
+    }
+
+    private static boolean isPortOpen(String host, int port) {
+        try (Socket socket = new Socket()) {
+            socket.connect(new InetSocketAddress(host, port), 500);
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     private static String calculateSha256(Path path) throws Exception {

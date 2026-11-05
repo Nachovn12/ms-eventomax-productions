@@ -20,6 +20,8 @@ public class OutboxRelay {
     private static final Logger log = LoggerFactory.getLogger(OutboxRelay.class);
     @org.springframework.beans.factory.annotation.Value("${eventomax.kafka.topic.productions}")
     private String topic;
+    @org.springframework.beans.factory.annotation.Value("${eventomax.outbox.relay.enabled:true}")
+    private boolean relayEnabled = true;
     private static final int MAX_RETRIES = 3;
 
     private final OutboxEventRepository outboxEventRepository;
@@ -36,6 +38,9 @@ public class OutboxRelay {
 
     @Scheduled(fixedDelayString = "${eventomax.outbox.poll-delay-ms:2000}", initialDelayString = "${eventomax.outbox.initial-delay-ms:0}")
     public void processOutbox() {
+        if (!relayEnabled) {
+            return;
+        }
         self.reclaimStuckEvents();
 
         // Claim only when ready to send: no batch waits behind slow publishes while its lease expires.

@@ -25,7 +25,7 @@ spring:
       mandatory: true
 
   kafka:
-    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS}
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
     producer:
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
       value-serializer: org.apache.kafka.common.serialization.StringSerializer
@@ -53,6 +53,9 @@ eventomax:
   kafka:
     topic:
       productions: ${KAFKA_TOPIC_PRODUCTIONS:productions.events}
+  outbox:
+    relay:
+      enabled: ${KAFKA_OUTBOX_RELAY_ENABLED:true}
   clients:
     catalog:
       base-url: ${CATALOG_BASE_URL}
