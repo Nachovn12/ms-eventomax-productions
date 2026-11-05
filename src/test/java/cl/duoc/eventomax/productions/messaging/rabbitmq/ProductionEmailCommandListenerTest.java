@@ -20,6 +20,9 @@ class ProductionEmailCommandListenerTest {
     @Mock
     private RabbitMQCommandPublisher publisher;
 
+    @Mock
+    private cl.duoc.eventomax.productions.service.OrganizerContactService organizerContactService;
+
     @InjectMocks
     private ProductionEmailCommandListener listener;
 

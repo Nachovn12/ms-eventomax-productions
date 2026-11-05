@@ -5,6 +5,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.MediaType;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.test.context.ActiveProfiles;
@@ -12,6 +13,7 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -57,5 +59,31 @@ public class ProductionSecurityIntegrationTest {
                 .contentType(MediaType.APPLICATION_JSON)
                 .content(validBody))
                 .andExpect(status().isForbidden()); // Because AccessDeniedException translates to 403
+    }
+
+    @Test
+    void getServices_WithoutAuth_Returns401() throws Exception {
+        mockMvc.perform(get("/api/productions/1/services"))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void republishQuoteCommand_WithoutAuth_Returns401() throws Exception {
+        mockMvc.perform(post("/api/productions/1/quote-command/republish"))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void republishQuoteCommand_WithOrganizerRole_Returns403() throws Exception {
+        Jwt token = Jwt.withTokenValue("mock-org")
+                .header("alg", "none")
+                .claim("sub", "org-user-1")
+                .build();
+
+        mockMvc.perform(post("/api/productions/1/quote-command/republish")
+                .with(jwt().jwt(token).authorities(
+                        new SimpleGrantedAuthority("SCOPE_access_as_user"),
+                        new SimpleGrantedAuthority("ROLE_Organizador"))))
+                .andExpect(status().isForbidden());
     }
 }

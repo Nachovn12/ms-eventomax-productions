@@ -14,14 +14,18 @@ spring:
     enabled: true
 
   rabbitmq:
-    host: ${RABBITMQ_HOST}
+    host: ${RABBITMQ_HOST:localhost}
     port: ${RABBITMQ_PORT:5672}
     virtual-host: ${RABBITMQ_VHOST:/}
     username: ${RABBITMQ_USERNAME}
     password: ${RABBITMQ_PASSWORD}
+    publisher-confirm-type: correlated
+    publisher-returns: true
+    template:
+      mandatory: true
 
   kafka:
-    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS}
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
     producer:
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
       value-serializer: org.apache.kafka.common.serialization.StringSerializer
@@ -49,6 +53,9 @@ eventomax:
   kafka:
     topic:
       productions: ${KAFKA_TOPIC_PRODUCTIONS:productions.events}
+  outbox:
+    relay:
+      enabled: ${KAFKA_OUTBOX_RELAY_ENABLED:true}
   clients:
     catalog:
       base-url: ${CATALOG_BASE_URL}
@@ -58,3 +65,4 @@ eventomax:
       routing-key:
         email: email.send
         crew: crew.ticket
+        quote: quote.gen
