@@ -38,11 +38,11 @@ class ProductionPersistenceTest {
         assertThat(columns).containsExactlyInAnyOrder(
                 "ID", "ORGANIZER_ID", "NAME", "SCHEDULED_AT", "LOCATION", "STATUS", "CREATED_AT", "UPDATED_AT", "CREW_ID", "CREW_NAME");
 
-        Map<String, Object> migration4 = jdbcTemplate.queryForMap(
+        Map<String, Object> migration8 = jdbcTemplate.queryForMap(
                 "select \"version\", \"script\", \"success\" from \"flyway_schema_history\" "
-                        + "where \"version\" = '4'");
-        assertThat(migration4.get("SCRIPT")).isEqualTo("V4__add_crew_assignment_to_productions.sql");
-        assertThat(migration4.get("SUCCESS")).isEqualTo(true);
+                        + "where \"version\" = '8'");
+        assertThat(migration8.get("SCRIPT")).isEqualTo("V8__add_crew_assignment_to_productions.sql");
+        assertThat(migration8.get("SUCCESS")).isEqualTo(true);
     }
 
     @Test
