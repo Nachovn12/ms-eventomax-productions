@@ -12,5 +12,19 @@ public record ProductionStatusChangedEvent(
         ProductionStatus newStatus,
         LocalDateTime scheduledAt,
         String location,
-        Instant occurredAt
-) {}
+        Instant occurredAt,
+        String crewId,
+        String crewName
+) {
+    public ProductionStatusChangedEvent(
+            Long productionId,
+            String organizerId,
+            String productionName,
+            ProductionStatus previousStatus,
+            ProductionStatus newStatus,
+            LocalDateTime scheduledAt,
+            String location,
+            Instant occurredAt) {
+        this(productionId, organizerId, productionName, previousStatus, newStatus, scheduledAt, location, occurredAt, null, null);
+    }
+}

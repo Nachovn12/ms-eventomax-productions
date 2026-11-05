@@ -37,6 +37,12 @@ public class Production {
     @Column(nullable = false, length = 30)
     private ProductionStatus status = ProductionStatus.SOLICITADO;
 
+    @Column(name = "crew_id", length = 100)
+    private String crewId;
+
+    @Column(name = "crew_name", length = 150)
+    private String crewName;
+
     @Column(name = "created_at", nullable = false)
     private LocalDateTime createdAt;
 
@@ -84,6 +90,10 @@ public class Production {
     public void setLocation(String location) { this.location = location; }
     public ProductionStatus getStatus() { return status; }
     public void setStatus(ProductionStatus status) { this.status = status; }
+    public String getCrewId() { return crewId; }
+    public void setCrewId(String crewId) { this.crewId = crewId; }
+    public String getCrewName() { return crewName; }
+    public void setCrewName(String crewName) { this.crewName = crewName; }
     public LocalDateTime getCreatedAt() { return createdAt; }
     public void setCreatedAt(LocalDateTime createdAt) { this.createdAt = createdAt; }
     public LocalDateTime getUpdatedAt() { return updatedAt; }

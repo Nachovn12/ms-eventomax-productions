@@ -52,6 +52,12 @@ public class ProductionService {
         production.setScheduledAt(request.scheduledAt());
         production.setLocation(request.location());
         production.setStatus(ProductionStatus.SOLICITADO);
+        if (request.crewId() != null) {
+            production.setCrewId(request.crewId());
+        }
+        if (request.crewName() != null) {
+            production.setCrewName(request.crewName());
+        }
 
         Production saved = repository.save(production);
 
@@ -65,7 +71,9 @@ public class ProductionService {
                     saved.getStatus().name(),
                     saved.getScheduledAt(),
                     saved.getLocation(),
-                    now
+                    now,
+                    saved.getCrewId(),
+                    saved.getCrewName()
             );
 
             cl.duoc.eventomax.productions.event.KafkaEventEnvelope<cl.duoc.eventomax.productions.event.ProductionCreatedEvent> envelope =
@@ -157,6 +165,13 @@ public class ProductionService {
             catalogClient.reserveInventory(production.getId(), request.items());
         }
 
+        if (request.crewId() != null) {
+            production.setCrewId(request.crewId());
+        }
+        if (request.crewName() != null) {
+            production.setCrewName(request.crewName());
+        }
+
         production.setStatus(request.status());
         Production updated = repository.saveAndFlush(production);
 
@@ -170,7 +185,9 @@ public class ProductionService {
                 updated.getStatus(),
                 updated.getScheduledAt(),
                 updated.getLocation(),
-                now
+                now,
+                updated.getCrewId(),
+                updated.getCrewName()
         );
         eventPublisher.publishEvent(statusEvent);
 
@@ -254,7 +271,9 @@ public class ProductionService {
                 production.getLocation(),
                 production.getStatus().name(),
                 production.getCreatedAt(),
-                production.getUpdatedAt()
+                production.getUpdatedAt(),
+                production.getCrewId(),
+                production.getCrewName()
         );
     }
 }

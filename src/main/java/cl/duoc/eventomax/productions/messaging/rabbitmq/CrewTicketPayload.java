@@ -8,5 +8,11 @@ public record CrewTicketPayload(
         String productionName,
         String scheduledAt,
         String location,
-        String status
-) {}
+        String status,
+        String crewId,
+        String crewName
+) {
+    public CrewTicketPayload(Long productionId, String productionName, String scheduledAt, String location, String status) {
+        this(productionId, productionName, scheduledAt, location, status, null, null);
+    }
+}

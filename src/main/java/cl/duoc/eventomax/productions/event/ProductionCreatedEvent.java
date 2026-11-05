@@ -10,6 +10,13 @@ public record ProductionCreatedEvent(
         String status,
         LocalDateTime scheduledAt,
         String location,
-        Instant occurredAt
-) {}
+        Instant occurredAt,
+        String crewId,
+        String crewName
+) {
+    public ProductionCreatedEvent(Long productionId, String organizerId, String productionName,
+                                  String status, LocalDateTime scheduledAt, String location, Instant occurredAt) {
+        this(productionId, organizerId, productionName, status, scheduledAt, location, occurredAt, null, null);
+    }
+}
 

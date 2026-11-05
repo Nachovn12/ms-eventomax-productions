@@ -26,7 +26,9 @@ public class ProductionCrewCommandListener {
                 event.productionName(),
                 event.scheduledAt() != null ? event.scheduledAt().toString() : null,
                 event.location(),
-                event.newStatus().name()
+                event.newStatus().name(),
+                event.crewId(),
+                event.crewName()
         );
 
         // AFTER_COMMIT evita publicar antes del commit de PostgreSQL,

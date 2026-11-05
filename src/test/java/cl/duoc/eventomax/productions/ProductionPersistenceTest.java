@@ -36,7 +36,13 @@ class ProductionPersistenceTest {
                 "select column_name from information_schema.columns "
                         + "where table_name = 'PRODUCTIONS'", String.class));
         assertThat(columns).containsExactlyInAnyOrder(
-                "ID", "ORGANIZER_ID", "NAME", "SCHEDULED_AT", "LOCATION", "STATUS", "CREATED_AT", "UPDATED_AT");
+                "ID", "ORGANIZER_ID", "NAME", "SCHEDULED_AT", "LOCATION", "STATUS", "CREATED_AT", "UPDATED_AT", "CREW_ID", "CREW_NAME");
+
+        Map<String, Object> migration4 = jdbcTemplate.queryForMap(
+                "select \"version\", \"script\", \"success\" from \"flyway_schema_history\" "
+                        + "where \"version\" = '4'");
+        assertThat(migration4.get("SCRIPT")).isEqualTo("V4__add_crew_assignment_to_productions.sql");
+        assertThat(migration4.get("SUCCESS")).isEqualTo(true);
     }
 
     @Test

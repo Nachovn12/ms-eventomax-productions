@@ -15,10 +15,20 @@ public record ProductionStatusUpdateDTO(
         ProductionStatus status,
 
         @Schema(description = "Ítems de inventario a reservar (Requerido solo al transicionar a CONFIRMADO)")
-        List<@Valid ProductionReservationItemDTO> items
+        List<@Valid ProductionReservationItemDTO> items,
+
+        @Schema(description = "Identificador de la cuadrilla asignada", example = "crew-01")
+        String crewId,
+
+        @Schema(description = "Nombre o descripción de la cuadrilla", example = "Cuadrilla Técnica Alpha")
+        String crewName
 ) {
     public ProductionStatusUpdateDTO(ProductionStatus status) {
-        this(status, null);
+        this(status, null, null, null);
+    }
+
+    public ProductionStatusUpdateDTO(ProductionStatus status, List<@Valid ProductionReservationItemDTO> items) {
+        this(status, items, null, null);
     }
 }
 

@@ -199,4 +199,28 @@ class ProductionServiceTest {
         assertThrows(InvalidTransitionException.class, () -> service.updateStatus(1L, request, "test-actor"));
         verifyNoInteractions(eventPublisher);
     }
+
+    @Test
+    void updateStatus_confirmadoToEnMontaje_withCrewAssignment_persistsCrewAndPublishes() {
+        production.setStatus(ProductionStatus.CONFIRMADO);
+        when(repository.findForUpdate(1L)).thenReturn(Optional.of(production));
+        when(repository.saveAndFlush(any(Production.class))).thenAnswer(i -> i.getArguments()[0]);
+
+        ProductionStatusUpdateDTO request = new ProductionStatusUpdateDTO(
+                ProductionStatus.EN_MONTAJE,
+                null,
+                "crew-101",
+                "Cuadrilla Escenario Central"
+        );
+
+        var result = service.updateStatus(1L, request, "productor-user");
+
+        assertEquals("EN_MONTAJE", result.status());
+        assertEquals("crew-101", result.crewId());
+        assertEquals("Cuadrilla Escenario Central", result.crewName());
+        assertEquals("crew-101", production.getCrewId());
+        assertEquals("Cuadrilla Escenario Central", production.getCrewName());
+        verify(repository, times(1)).saveAndFlush(production);
+        verify(eventPublisher, times(1)).publishEvent(any(cl.duoc.eventomax.productions.event.ProductionStatusChangedEvent.class));
+    }
 }
