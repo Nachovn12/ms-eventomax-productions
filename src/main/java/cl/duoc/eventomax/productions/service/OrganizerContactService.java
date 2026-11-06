@@ -25,6 +25,9 @@ public class OrganizerContactService {
 
     private final OrganizerContactRepository contactRepository;
 
+    @org.springframework.beans.factory.annotation.Value("${eventomax.messaging.email.default-recipient:}")
+    private String defaultRecipientEmail;
+
     public OrganizerContactService(OrganizerContactRepository contactRepository) {
         this.contactRepository = contactRepository;
     }
@@ -92,9 +95,16 @@ public class OrganizerContactService {
         if (organizerId == null || organizerId.isBlank()) {
             return Optional.empty();
         }
-        return contactRepository.findByOrganizerIdAndActiveTrue(organizerId.trim())
+        Optional<String> dbEmail = contactRepository.findByOrganizerIdAndActiveTrue(organizerId.trim())
                 .map(OrganizerContact::getEmail)
                 .filter(email -> email != null && !email.isBlank());
+        if (dbEmail.isPresent()) {
+            return dbEmail;
+        }
+        if (defaultRecipientEmail != null && !defaultRecipientEmail.isBlank()) {
+            return Optional.of(defaultRecipientEmail.trim());
+        }
+        return Optional.empty();
     }
 
     @Transactional(readOnly = true)

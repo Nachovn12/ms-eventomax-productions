@@ -60,6 +60,8 @@ eventomax:
     catalog:
       base-url: ${CATALOG_BASE_URL}
   messaging:
+    email:
+      default-recipient: ${EVENTOMAX_DEFAULT_RECIPIENT_EMAIL:}
     rabbitmq:
       exchange: cmd.direct
       routing-key:
