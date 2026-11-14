@@ -28,5 +28,16 @@ public record ProductionResponseDTO(
         LocalDateTime createdAt,
         
         @Schema(description = "Fecha de la última actualización del registro")
-        LocalDateTime updatedAt
-) {}
+        LocalDateTime updatedAt,
+
+        @Schema(description = "Identificador de la cuadrilla asignada", example = "crew-01")
+        String crewId,
+
+        @Schema(description = "Nombre de la cuadrilla asignada", example = "Cuadrilla Técnica Alpha")
+        String crewName
+) {
+    public ProductionResponseDTO(Long id, String organizerId, String name, LocalDateTime scheduledAt,
+                                 String location, String status, LocalDateTime createdAt, LocalDateTime updatedAt) {
+        this(id, organizerId, name, scheduledAt, location, status, createdAt, updatedAt, null, null);
+    }
+}

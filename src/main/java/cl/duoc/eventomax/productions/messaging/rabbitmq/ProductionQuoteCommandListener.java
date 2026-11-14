@@ -112,6 +112,9 @@ public class ProductionQuoteCommandListener {
     private final ProductionRepository productionRepository;
     private final ObjectMapper objectMapper;
 
+    @org.springframework.beans.factory.annotation.Value("${eventomax.messaging.email.default-recipient:}")
+    private String defaultRecipientEmail;
+
     public ProductionQuoteCommandListener(RabbitMQCommandPublisher publisher) {
         this(publisher, null, null, null, null, new ObjectMapper());
     }
@@ -177,6 +180,8 @@ public class ProductionQuoteCommandListener {
                         contactName = contact.getContactName();
                         contactPhone = contact.getPhone();
                         maskedEmail = maskEmail(contact.getEmail());
+                    } else if (defaultRecipientEmail != null && !defaultRecipientEmail.isBlank()) {
+                        maskedEmail = maskEmail(defaultRecipientEmail.trim());
                     }
                 } catch (Exception ex) {
                     log.warn("Fallo en consulta de contacto para organizador {} (producción {}): {}", organizerId, productionId, ex.getMessage());

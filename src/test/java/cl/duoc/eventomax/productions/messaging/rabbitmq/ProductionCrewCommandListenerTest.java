@@ -62,6 +62,31 @@ class ProductionCrewCommandListenerTest {
     }
 
     @Test
+    void handleProductionStatusChanged_enMontaje_withCrewAssignment_propagatesCrewData() {
+        ProductionStatusChangedEvent event = new ProductionStatusChangedEvent(
+                15L,
+                "org-1",
+                "Festival Rock",
+                ProductionStatus.CONFIRMADO,
+                ProductionStatus.EN_MONTAJE,
+                LocalDateTime.parse("2026-12-01T20:00:00"),
+                "Estadio",
+                Instant.now(),
+                "crew-007",
+                "Cuadrilla Sonido Alpha"
+        );
+
+        listener.handleProductionStatusChanged(event);
+
+        verify(publisher, times(1)).publishCrewTicketCommand(payloadCaptor.capture());
+
+        CrewTicketPayload payload = payloadCaptor.getValue();
+        assertEquals(15L, payload.productionId());
+        assertEquals("crew-007", payload.crewId());
+        assertEquals("Cuadrilla Sonido Alpha", payload.crewName());
+    }
+
+    @Test
     void handleProductionStatusChanged_confirmado_doesNotPublish() {
         listener.handleProductionStatusChanged(createEvent(ProductionStatus.CONFIRMADO));
         verifyNoInteractions(publisher);

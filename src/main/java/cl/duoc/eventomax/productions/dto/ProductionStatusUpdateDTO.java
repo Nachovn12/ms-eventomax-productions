@@ -18,14 +18,27 @@ public record ProductionStatusUpdateDTO(
         List<@Valid ProductionReservationItemDTO> items,
 
         @Schema(description = "IDs de servicios de catálogo a contratar (Opcional, al transicionar a CONFIRMADO)")
-        List<Long> serviceIds
+        List<Long> serviceIds,
+
+        @Schema(description = "Identificador de la cuadrilla asignada", example = "crew-01")
+        String crewId,
+
+        @Schema(description = "Nombre o descripción de la cuadrilla", example = "Cuadrilla Técnica Alpha")
+        String crewName
 ) {
     public ProductionStatusUpdateDTO(ProductionStatus status) {
-        this(status, null, null);
+        this(status, null, null, null, null);
     }
 
     public ProductionStatusUpdateDTO(ProductionStatus status, List<@Valid ProductionReservationItemDTO> items) {
-        this(status, items, null);
+        this(status, items, null, null, null);
+    }
+
+    public ProductionStatusUpdateDTO(ProductionStatus status, List<@Valid ProductionReservationItemDTO> items, List<Long> serviceIds) {
+        this(status, items, serviceIds, null, null);
+    }
+
+    public ProductionStatusUpdateDTO(ProductionStatus status, List<@Valid ProductionReservationItemDTO> items, String crewId, String crewName) {
+        this(status, items, null, crewId, crewName);
     }
 }
-

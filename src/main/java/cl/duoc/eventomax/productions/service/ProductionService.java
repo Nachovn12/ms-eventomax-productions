@@ -106,6 +106,12 @@ public class ProductionService {
         production.setScheduledAt(request.scheduledAt());
         production.setLocation(request.location());
         production.setStatus(ProductionStatus.SOLICITADO);
+        if (request.crewId() != null) {
+            production.setCrewId(request.crewId());
+        }
+        if (request.crewName() != null) {
+            production.setCrewName(request.crewName());
+        }
 
         Production saved = repository.save(production);
 
@@ -119,7 +125,9 @@ public class ProductionService {
                     saved.getStatus().name(),
                     saved.getScheduledAt(),
                     saved.getLocation(),
-                    now
+                    now,
+                    saved.getCrewId(),
+                    saved.getCrewName()
             );
 
             KafkaEventEnvelope<ProductionCreatedEvent> envelope =
@@ -270,7 +278,7 @@ public class ProductionService {
         } else if (request.status() == ProductionStatus.CANCELADO) {
             return handleCancellation(id, actor);
         } else {
-            return executeStandardStatusUpdate(id, request.status(), actor);
+            return executeStandardStatusUpdate(id, request.status(), request.crewId(), request.crewName(), actor);
         }
     }
 
@@ -459,7 +467,12 @@ public class ProductionService {
     }
 
     public ProductionResponseDTO executeStandardStatusUpdate(Long id, ProductionStatus nextStatus, String actor) {
-        Production saved = stateCoordinator.executeStandardStatusUpdate(id, nextStatus, actor);
+        Production saved = stateCoordinator.executeStandardStatusUpdate(id, nextStatus, null, null, actor);
+        return toResponseDTO(saved);
+    }
+
+    public ProductionResponseDTO executeStandardStatusUpdate(Long id, ProductionStatus nextStatus, String crewId, String crewName, String actor) {
+        Production saved = stateCoordinator.executeStandardStatusUpdate(id, nextStatus, crewId, crewName, actor);
         return toResponseDTO(saved);
     }
 
@@ -476,7 +489,9 @@ public class ProductionService {
                 production.getLocation(),
                 production.getStatus().name(),
                 production.getCreatedAt(),
-                production.getUpdatedAt()
+                production.getUpdatedAt(),
+                production.getCrewId(),
+                production.getCrewName()
         );
     }
 }

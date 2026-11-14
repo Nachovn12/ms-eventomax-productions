@@ -29,7 +29,19 @@ public record ProductionRequestDTO(
         @Schema(description = "Ubicación del evento", example = "Estadio Nacional")
         @NotBlank(message = "La ubicacion es obligatoria")
         @Size(max = 255, message = "La ubicacion no debe exceder 255 caracteres")
-        String location
+        String location,
 
-) {}
+        @Schema(description = "Identificador opcional de la cuadrilla asignada", example = "crew-01")
+        @Size(max = 100, message = "El identificador de cuadrilla no debe exceder 100 caracteres")
+        String crewId,
+
+        @Schema(description = "Nombre opcional de la cuadrilla asignada", example = "Cuadrilla Técnica Alpha")
+        @Size(max = 150, message = "El nombre de la cuadrilla no debe exceder 150 caracteres")
+        String crewName
+
+) {
+    public ProductionRequestDTO(String organizerId, String name, LocalDateTime scheduledAt, String location) {
+        this(organizerId, name, scheduledAt, location, null, null);
+    }
+}
 

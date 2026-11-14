@@ -359,11 +359,23 @@ public class ProductionStateCoordinator {
 
     @Transactional
     public Production executeStandardStatusUpdate(Long id, ProductionStatus nextStatus, String actor) {
+        return executeStandardStatusUpdate(id, nextStatus, null, null, actor);
+    }
+
+    @Transactional
+    public Production executeStandardStatusUpdate(Long id, ProductionStatus nextStatus, String crewId, String crewName, String actor) {
         Production production = repository.findForUpdate(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Produccion no encontrada con id: " + id));
 
         ProductionStatus previousStatus = production.getStatus();
         validateTransition(previousStatus, nextStatus);
+
+        if (crewId != null) {
+            production.setCrewId(crewId);
+        }
+        if (crewName != null) {
+            production.setCrewName(crewName);
+        }
 
         production.setStatus(nextStatus);
         Production saved = repository.saveAndFlush(production);
@@ -389,7 +401,9 @@ public class ProductionStateCoordinator {
                 updated.getScheduledAt(),
                 updated.getLocation(),
                 now,
-                services
+                services,
+                updated.getCrewId(),
+                updated.getCrewName()
         );
         eventPublisher.publishEvent(statusEvent);
 

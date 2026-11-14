@@ -15,7 +15,9 @@ public record ProductionStatusChangedEvent(
         LocalDateTime scheduledAt,
         String location,
         Instant occurredAt,
-        List<ContractedServiceDto> services
+        List<ContractedServiceDto> services,
+        String crewId,
+        String crewName
 ) {
     public ProductionStatusChangedEvent(
             Long productionId,
@@ -26,6 +28,33 @@ public record ProductionStatusChangedEvent(
             LocalDateTime scheduledAt,
             String location,
             Instant occurredAt) {
-        this(productionId, organizerId, productionName, previousStatus, newStatus, scheduledAt, location, occurredAt, null);
+        this(productionId, organizerId, productionName, previousStatus, newStatus, scheduledAt, location, occurredAt, null, null, null);
+    }
+
+    public ProductionStatusChangedEvent(
+            Long productionId,
+            String organizerId,
+            String productionName,
+            ProductionStatus previousStatus,
+            ProductionStatus newStatus,
+            LocalDateTime scheduledAt,
+            String location,
+            Instant occurredAt,
+            List<ContractedServiceDto> services) {
+        this(productionId, organizerId, productionName, previousStatus, newStatus, scheduledAt, location, occurredAt, services, null, null);
+    }
+
+    public ProductionStatusChangedEvent(
+            Long productionId,
+            String organizerId,
+            String productionName,
+            ProductionStatus previousStatus,
+            ProductionStatus newStatus,
+            LocalDateTime scheduledAt,
+            String location,
+            Instant occurredAt,
+            String crewId,
+            String crewName) {
+        this(productionId, organizerId, productionName, previousStatus, newStatus, scheduledAt, location, occurredAt, null, crewId, crewName);
     }
 }

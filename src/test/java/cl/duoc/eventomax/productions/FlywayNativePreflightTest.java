@@ -47,7 +47,7 @@ public class FlywayNativePreflightTest {
         MigrateResult result = flyway.migrate();
         assertTrue(result.success);
         String currentVersion = flyway.info().current() != null ? flyway.info().current().getVersion().getVersion() : null;
-        assertEquals("7", currentVersion != null ? currentVersion : result.targetSchemaVersion);
+        assertEquals("8", currentVersion != null ? currentVersion : result.targetSchemaVersion);
 
         try (Connection conn = DriverManager.getConnection(jdbcUrl, username, password);
              Statement stmt = conn.createStatement()) {
