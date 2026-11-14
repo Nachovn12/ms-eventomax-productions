@@ -1,94 +1,131 @@
-# ms-eventomax-productions — Microservicio de Dominio de Producciones y Orquestación Asíncrona (EP2)
+<a href="https://eventomax-production-portal-app.s3.us-east-1.amazonaws.com/index.html">
+  <img src="docs/assets/eventomax-productions-banner.svg" alt="EventoMax — Producciones" width="100%" />
+</a>
 
-**Asignatura:** Desarrollo Cloud Native I (`DSY1107`)
-**Caso de Estudio:** Caso 8 — Plataforma de Producción y Montaje de Eventos (**EventoMax**)
-**Equipo:** Ignacio Valeria, Benjamín Flores, Benjamín Espinoza
+> **Caso de Estudio 8:** Plataforma B2B de Producción y Montaje de Eventos &nbsp;|&nbsp; **Asignatura:** Desarrollo Cloud Native (`DSY1107`) &nbsp;|&nbsp; **Equipo:** Ignacio Valeria, Benjamín Flores, Benjamín Espinoza
 
----
+## Propósito del Repositorio
 
-## 1. Propósito del Repositorio y Rol en EventoMax
+`ms-eventomax-productions` es el núcleo transaccional (*System of Record*) para la gestión del ciclo de vida de cada producción en **EventoMax**:
 
-`ms-eventomax-productions` es el microservicio central de escritura transaccional (*System of Record*) para el ciclo de vida de producciones de eventos, contratación de servicios de catálogo, coordinación de reservas de equipamiento e información de contacto minimizada del organizador.
+- **Máquina de Estados y Orquestación Saga:** Controla las transiciones `SOLICITADO → CONFIRMADO → EN_MONTAJE → EN_EJECUCION → CERRADO` (y `CANCELADO`), coordinando de forma síncrona las reservas de equipamiento y compensaciones con *generation fencing* hacia `ms-eventomax-catalog`.
+- **Comandos Asíncronos hacia RabbitMQ (`AFTER_COMMIT`):** Emite comandos punto a punto tras confirmar la transacción en PostgreSQL con **Publisher Confirms correlacionados** (`publisher-confirm-type: correlated`, `mandatory: true`) sobre el exchange `cmd.direct`:
+  - `email.send` → Notificaciones de cambio de estado (con fallback configurable vía `EVENTOMAX_DEFAULT_RECIPIENT_EMAIL`).
+  - `crew.ticket` → Emisión de tickets de cuadrilla técnica al avanzar a montaje/ejecución (`V8` `crew_id`, `crew_name`).
+  - `quote.gen` → Generación y republicación idempotente del Acta de Cierre PDF al estado `CERRADO`.
+- **Transactional Outbox hacia Apache Kafka:** Persiste eventos de dominio (`ProductionCreated`, `ProductionStatusChanged`) en `outbox_events` dentro de la misma transacción de negocio y los publica hacia el tópico `productions.events` mediante `OutboxRelay` cuando `KAFKA_OUTBOX_RELAY_ENABLED=true`.
 
-En la arquitectura híbrida de **EventoMax EP2**, cumple un doble rol de mensajería desacoplada:
-1. **Productor de Comandos Operativos hacia RabbitMQ (`cmd.direct`):** Dispara comandos punto-a-punto post-commit (`TransactionPhase.AFTER_COMMIT`) con **Publisher Confirms correlacionados** (`publisher-confirm-type: correlated`, `mandatory: true`) para:
-   - Notificación por correo de cambios de estado (`email.send` → `q.cmd.email`).
-   - Asignación de tickets de cuadrilla técnica al pasar a ejecución (`crew.ticket` → `q.cmd.crew`).
-   - Generación del **Acta y Cotización Formal de Cierre en PDF** al cerrar la producción (`quote.gen` → `q.cmd.quote`), adjuntando un contrato enriquecido de 16 campos con servicios contratados, contacto del organizador enmascarado y línea de tiempo transaccional verificable.
-2. **Productor de Eventos de Dominio hacia Apache Kafka (`productions.events`):** Implementa el patrón **Transactional Outbox** sobre PostgreSQL (`outbox_events` + `OutboxRelay`) para alimentar de manera asíncrona las proyecciones CQRS de `ms-eventomax-report` y la trazabilidad inmutable de `ms-eventomax-audit`. En despliegues AWS EC2 donde Kafka se mantiene apagado (`KAFKA_OUTBOX_RELAY_ENABLED=false`), todos los eventos de negocio (`ProductionCreated`, `ProductionStatusChanged`) se persisten íntegramente en `outbox_events` con estado `PENDING` (`retries=0`), sin perder ningún evento y permitiendo que el flujo completo de producción, comandos RabbitMQ y generación de Acta PDF opere al 100%.
+## Accesos Relacionados (Demo AWS)
 
----
+| Recurso | Enlace HTTPS | Acceso |
+| :--- | :--- | :--- |
+| **Portal Web EventoMax** | [Abrir Portal Web](https://eventomax-production-portal-app.s3.us-east-1.amazonaws.com/index.html) | Microsoft Entra ID (OAuth 2.0 PKCE) |
+| **Swagger UI (Tag `Producciones` / `Organizadores`)** | [Abrir Swagger UI](https://7dewsdyt7i.execute-api.us-east-1.amazonaws.com/swagger-ui/index.html) | Lectura pública · `Bearer <JWT>` |
 
-## 2. Arquitectura del Módulo y Diagrama
+## Endpoints Expuestos (`expose 8080`)
+
+| Método | Ruta | Roles Autorizados | Descripción |
+| :--- | :--- | :--- | :--- |
+| `POST` | `/api/productions` | `Productor`, `Organizador` | Crea producción en estado `SOLICITADO` y registra evento `ProductionCreated` en Outbox |
+| `GET` | `/api/productions` | `Admin`, `Productor`, `Organizador` | Lista producciones (filtradas por propiedad cuando el rol es `Organizador`) |
+| `GET` | `/api/productions/{id}` | `Admin`, `Productor`, `Organizador` | Obtiene el detalle de la producción validando control anti-IDOR |
+| `GET` | `/api/productions/{id}/services` | `Admin`, `Productor`, `Organizador` | Lista los servicios técnicos contratados en la producción |
+| `PUT` | `/api/productions/{id}/status` | `Admin`, `Productor` | Ejecuta transición de estado, reservas/compensación Saga y dispara RabbitMQ + Outbox |
+| `POST` | `/api/productions/{id}/quote-command/republish` | `Admin`, `Productor` | Reconstruye y republica el comando `quote.gen` en producciones `CERRADO` |
+| `GET` / `PUT` | `/api/organizers/{organizerId}/contact` | `Admin`, `Productor`, `Organizador` (`PUT` sin `Productor`) | Consulta o actualiza contacto del organizador con trazabilidad `user_oid` |
+| `POST` | `/api/productions/admin/outbox/{id}/retry` | `Admin` | Reintenta manualmente la publicación de un evento en `outbox_events` |
+| `GET` | `/actuator/health`, `/actuator/info` | Interno | Sondeo de salud Docker / EC2 |
+
+## Base de Datos y Migraciones Flyway (`V1..V8`)
+
+| Versión | Script | Propósito |
+| :--- | :--- | :--- |
+| `V1` | `V1__create_productions_table.sql` | Tabla principal `productions` con estado inicial `SOLICITADO` |
+| `V2` | `V2__create_outbox_events.sql` | Tabla `outbox_events` para patrón Transactional Outbox |
+| `V3` | `V3__outbox_sequence.sql` | Columna de secuencia monótona `sequence_no` |
+| `V4` | `V4__create_inventory_reservation_tasks_table.sql` | Tareas de coordinación y compensación de reservas en catálogo |
+| `V5` | `V5__add_reservation_generation_to_tasks.sql` | Campo `reservation_generation` para fencing |
+| `V6` | `V6__create_production_services_table.sql` | Servicios contratados por producción (`production_services`) |
+| `V7` | `V7__create_organizer_contacts_table.sql` | Tabla `organizer_contacts` con índice sobre `user_oid` |
+| `V8` | `V8__add_crew_assignment_to_productions.sql` | Columnas `crew_id` y `crew_name` para asignación de cuadrilla |
+
+## Stack Tecnológico
+
+<table>
+  <tr>
+    <td align="center" width="25%">
+      <img src="docs/assets/tech/spring-boot.svg" width="36" height="36" alt="Spring Boot" /><br />
+      <strong>Java 25 · Boot 4.1.1</strong>
+    </td>
+    <td align="center" width="25%">
+      <img src="docs/assets/tech/postgresql.svg" width="36" height="36" alt="PostgreSQL" /><br />
+      <strong>PostgreSQL · Flyway</strong>
+    </td>
+    <td align="center" width="25%">
+      <img src="docs/assets/tech/rabbitmq.svg" width="36" height="36" alt="RabbitMQ" /><br />
+      <strong>RabbitMQ Confirms</strong>
+    </td>
+    <td align="center" width="25%">
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="docs/assets/tech/apache-kafka-dark.svg" />
+        <img src="docs/assets/tech/apache-kafka.svg" width="36" height="36" alt="Apache Kafka" />
+      </picture><br />
+      <strong>Apache Kafka Outbox</strong>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="25%">
+      <img src="docs/assets/tech/microsoft.svg" width="36" height="36" alt="Microsoft Entra ID" /><br />
+      <strong>Entra ID OAuth2</strong>
+    </td>
+    <td align="center" width="25%">
+      <img src="docs/assets/tech/aws-rds.svg" width="36" height="36" alt="Amazon RDS" /><br />
+      <strong>Amazon RDS (schema)</strong>
+    </td>
+    <td align="center" width="25%">
+      <img src="docs/assets/tech/docker.svg" width="36" height="36" alt="Docker" /><br />
+      <strong>Docker (640m)</strong>
+    </td>
+    <td align="center" width="25%">
+      <img src="docs/assets/tech/spring-boot.svg" width="36" height="36" alt="Testcontainers" /><br />
+      <strong>JUnit 5 · Testcontainers</strong>
+    </td>
+  </tr>
+</table>
+
+## Arquitectura del Módulo
 
 ```mermaid
-flowchart LR
-    subgraph Cliente y Borde
-        SPA["Angular 22 SPA + MSAL"]
-        APIGW["AWS API Gateway (JWT Authorizer)"]
-        BFF["ms-eventomax-bff (:8080)"]
+flowchart TB
+    BFF["ms-eventomax-bff"] -->|"REST JWT (/api/productions · /api/organizers)"| PROD
+
+    subgraph PROD["ms-eventomax-productions (:8080)"]
+        direction LR
+        CTRL["Controllers + Saga Service"] --> PG[("PostgreSQL (V1..V8)<br/>productions · outbox_events<br/>organizer_contacts")]
+        CTRL -->|"AFTER_COMMIT"| PUB["RabbitMQCommandPublisher<br/>(Publisher Confirms)"]
+        PG --> RELAY["OutboxRelay<br/>(@Scheduled)"]
     end
 
-    subgraph Dominio Producciones
-        PROD["ms-eventomax-productions (:8080)"]
-        PG_PROD[("PostgreSQL (V1..V7)\nproductions\nproduction_contracted_services\norganizer_contacts\noutbox_events\ninventory_reservation_tasks")]
-        AFTER_COMMIT["Listeners AFTER_COMMIT\n(Email / Crew / Quote)"]
-        PUB["RabbitMQCommandPublisher\n(Correlated Confirms + Returns)"]
-        RELAY["OutboxRelay (@Scheduled)"]
-    end
-
-    subgraph Integraciones Síncronas y Brokers
-        CAT["ms-eventomax-catalog (:8080)"]
-        RMQ[["RabbitMQ Cluster\nExchange: cmd.direct\nDLX: cmd.dead.dlx"]]
-        KFK[["Apache Kafka\nTopic: productions.events"]]
-        NOTIFY["ms-eventomax-notify (:8080)\nOpenPDF + Tickets + SMTP"]
-    end
-
-    SPA -->|HTTPS + Bearer JWT| APIGW --> BFF --> PROD
-    PROD <-->|JPA + Flyway| PG_PROD
-    PROD -->|REST Reserva / Compensación| CAT
-    PROD -->|AFTER_COMMIT| AFTER_COMMIT --> PUB
-    PUB -->|email.send / crew.ticket / quote.gen| RMQ --> NOTIFY
-    PG_PROD --> RELAY -->|KafkaEventEnvelope| KFK
+    CTRL -->|"REST Reserva / Compensación"| CAT["ms-eventomax-catalog (:8080)"]
+    PUB -->|"email.send · crew.ticket · quote.gen"| RMQ[["RabbitMQ (cmd.direct)"]]
+    RELAY -->|"KafkaEventEnvelope"| KFK[["Apache Kafka (productions.events)"]]
 ```
 
----
+## Variables de Entorno y Verificación
 
-## 3. Endpoints Expuestos
-
-| Método | Ruta | Roles Autorizados (JWT + Scope `access_as_user`) | Descripción |
-|---|---|---|---|
-| `GET` | `/api/productions` | `Admin`, `Productor`, `Organizador` | Lista producciones (filtradas automáticamente por `organizerId` para `Organizador`). |
-| `GET` | `/api/productions/{id}` | `Admin`, `Productor`, `Organizador` | Obtiene detalle de una producción (valida anti-IDOR para `Organizador`). |
-| `GET` | `/api/productions/{id}/services` | `Admin`, `Productor`, `Organizador` | Lista los servicios de catálogo contratados en la producción (valida anti-IDOR para `Organizador`). |
-| `POST` | `/api/productions` | `Productor`, `Organizador` | Crea una nueva producción en estado `SOLICITADO` y registra evento `ProductionCreated` en Outbox. |
-| `PUT` | `/api/productions/{id}/status` | `Admin`, `Productor` | Ejecuta transición en máquina de estados (`SOLICITADO → CONFIRMADO → EN_EJECUCION → CERRADO` o `CANCELADO`), coordina reservas y servicios de catálogo y dispara comandos RabbitMQ + eventos Outbox. |
-| `POST` | `/api/productions/{id}/quote-command/republish` | `Admin`, `Productor` | Reconstruye desde PostgreSQL y republica de forma segura e idempotente el comando `quote.gen` para una producción en estado `CERRADO`. |
-| `GET` | `/api/organizers/{organizerId}/contact` | `Admin`, `Productor`, `Organizador` | Obtiene el contacto registrado del organizador (valida anti-IDOR para `Organizador`). |
-| `PUT` | `/api/organizers/{organizerId}/contact` | `Admin`, `Organizador` | Registra o actualiza correo, nombre y teléfono del organizador con trazabilidad de `user_oid`. |
-| `GET` | `/actuator/health`, `/actuator/info` | Público (Healthcheck interno) | Estado de salud del microservicio. |
-
----
-
-## 4. Base de Datos y Migraciones Flyway (`V1..V7`)
-
-| Versión | Archivo | Descripción |
-|---|---|---|
-| `V1` | `V1__init_productions.sql` | Crea tablas `productions` y `outbox_events`. |
-| `V2` | `V2__align_production_status_constraint.sql` | Alinea constraint de estados (`SOLICITADO`, `CONFIRMADO`, `EN_EJECUCION`, `CERRADO`, `CANCELADO`). |
-| `V3` | `V3__create_inventory_reservation_tasks.sql` | Crea tabla de tareas de compensación/verificación de inventario. |
-| `V4` | `V4__add_services_json_to_reservation_tasks.sql` | Añade columna `services_json` a las tareas de reserva. |
-| `V5` | `V5__add_reservation_generation_to_tasks.sql` | Añade columna `reservation_generation` (fencing token). |
-| `V6` | `V6__create_production_services_table.sql` | Crea tabla `production_services` para contratación de servicios. |
-| `V7` | `V7__create_organizer_contacts_table.sql` | Crea tabla `organizer_contacts` con índice sobre `user_oid` y restricción única parcial de contacto activo por organizador. |
-
----
-
-## 5. Ejecución de Pruebas Automatizadas y Despliegue Docker
+| Variable | Ejemplo | Descripción |
+| :--- | :--- | :--- |
+| `DB_URL` / `DB_USER` / `DB_PASSWORD` | `jdbc:postgresql://<HOST>:5432/eventomax?currentSchema=productions` | Conexión PostgreSQL y esquema Flyway |
+| `CATALOG_BASE_URL` | `http://ms-eventomax-catalog:8080` | URL interna del servicio de catálogo |
+| `SPRING_RABBITMQ_ADDRESSES` | `rabbitmq-1:5672,rabbitmq-2:5672` | Nodos RabbitMQ para publicación de comandos |
+| `KAFKA_BOOTSTRAP_SERVERS` / `KAFKA_OUTBOX_RELAY_ENABLED` | `ec2-kafka:9092` / `true` | Brokers Kafka y activación de `OutboxRelay` |
+| `EVENTOMAX_DEFAULT_RECIPIENT_EMAIL` | `<EMAIL_FALLBACK>` | Destinatario de respaldo en notificaciones y actas |
+| `ENTRA_ISSUER_URI` / `ENTRA_AUDIENCE` | `https://login.microsoftonline.com/<TENANT>/v2.0` | Validación JWT Entra ID |
 
 ```bash
-./mvnw clean verify -B
+# Suite completa con Testcontainers (PostgreSQL y Kafka)
+./mvnw -B -ntp verify
+
+# Despliegue Docker en red eventomax-net (mem_limit: 640m)
 docker compose --env-file .env.prod -f docker-compose.prod.yml up -d --build
 ```
-
-**Resultado certificado en EP2:** `Tests run: 220, Failures: 0, Errors: 0, Skipped: 1 — BUILD SUCCESS`. Presupuesto de memoria: `mem_limit: 640m`.
