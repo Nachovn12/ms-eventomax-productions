@@ -12,18 +12,24 @@ public class KafkaEventEnvelope<T> {
     private String traceId;
     private String correlationId;
     private String actor;
+    private String source = "ms-eventomax-productions";
     private T payload;
 
     public KafkaEventEnvelope() {
     }
 
     public KafkaEventEnvelope(UUID eventId, String type, Instant timestamp, String traceId, String correlationId, String actor, T payload) {
+        this(eventId, type, timestamp, traceId, correlationId, actor, "ms-eventomax-productions", payload);
+    }
+
+    public KafkaEventEnvelope(UUID eventId, String type, Instant timestamp, String traceId, String correlationId, String actor, String source, T payload) {
         this.eventId = eventId;
         this.type = type;
         this.timestamp = timestamp;
         this.traceId = traceId;
         this.correlationId = correlationId;
         this.actor = actor;
+        this.source = (source != null && !source.isBlank()) ? source : "ms-eventomax-productions";
         this.payload = payload;
     }
 
@@ -81,6 +87,14 @@ public class KafkaEventEnvelope<T> {
 
     public void setActor(String actor) {
         this.actor = actor;
+    }
+
+    public String getSource() {
+        return source;
+    }
+
+    public void setSource(String source) {
+        this.source = source;
     }
 
     public T getPayload() {
