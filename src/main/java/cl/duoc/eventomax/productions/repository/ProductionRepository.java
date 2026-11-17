@@ -2,10 +2,12 @@ package cl.duoc.eventomax.productions.repository;
 
 import cl.duoc.eventomax.productions.model.Production;
 import cl.duoc.eventomax.productions.model.ProductionStatus;
+import cl.duoc.eventomax.productions.security.SecurityUtils;
 import jakarta.persistence.criteria.Predicate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
 import org.springframework.stereotype.Repository;
@@ -31,8 +33,18 @@ public interface ProductionRepository extends JpaRepository<Production, Long>, J
     default List<Production> findByFilters(ProductionStatus status, LocalDateTime from, LocalDateTime to, java.util.Collection<String> organizerIds) {
         return findAll((root, query, builder) -> {
             List<Predicate> predicates = new ArrayList<>();
+            if (organizerIds != null && organizerIds.isEmpty()) {
+                return builder.disjunction();
+            }
             if (organizerIds != null && !organizerIds.isEmpty()) {
-                predicates.add(root.get("organizerId").in(organizerIds));
+                Predicate exactOwner = root.get("organizerId").in(organizerIds);
+                List<String> canonicalOwners = organizerIds.stream()
+                        .filter(SecurityUtils::isCanonicalOwnerId)
+                        .map(id -> id.toLowerCase(Locale.ROOT))
+                        .toList();
+                // Preserve exact business aliases; only canonical identities ignore case.
+                predicates.add(canonicalOwners.isEmpty() ? exactOwner : builder.or(exactOwner,
+                        builder.lower(root.get("organizerId")).in(canonicalOwners)));
             }
             if (status != null) predicates.add(builder.equal(root.get("status"), status));
             if (from != null) predicates.add(builder.greaterThanOrEqualTo(root.get("scheduledAt"), from));

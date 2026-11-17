@@ -66,6 +66,11 @@ public class ProductionController {
                     throw new org.springframework.security.access.AccessDeniedException(
                             "No esta autorizado para crear producciones en nombre de este organizador");
                 }
+                // Normalize only the canonical identity already verified against this caller's JWT.
+                // Business aliases retain their original identifier and ownership rules.
+                if (cl.duoc.eventomax.productions.security.SecurityUtils.isCanonicalOwnerId(targetOrganizerId)) {
+                    targetOrganizerId = cl.duoc.eventomax.productions.security.SecurityUtils.requireOrganizerOwnerId(jwt);
+                }
             } else {
                 targetOrganizerId = organizerContactService.resolveAuthorizedOrganizerIds(jwt).stream()
                         .findFirst()

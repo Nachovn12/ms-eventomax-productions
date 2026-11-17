@@ -22,7 +22,7 @@ public record OrganizerContactRequestDTO(
         @Size(max = 50, message = "El teléfono no debe exceder 50 caracteres")
         String phone,
 
-        @Schema(description = "Object ID de Microsoft Entra ID del organizador (opcional, asignable por administrador)", example = "d762a6e9-9134-4a4b-97e3-057bfd9d883b")
+        @Schema(description = "Object ID de Microsoft Entra ID (asignacion reservada a Admin; Organizador no puede reasignarlo)", example = "d762a6e9-9134-4a4b-97e3-057bfd9d883b")
         @Size(max = 255, message = "El userOid no debe exceder 255 caracteres")
         String userOid
 ) {
