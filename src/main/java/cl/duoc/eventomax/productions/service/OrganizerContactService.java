@@ -50,14 +50,21 @@ public class OrganizerContactService {
         String actor = (jwt != null) ? SecurityUtils.resolveOwnerId(jwt) : "system";
         boolean isOrganizerSelf = (jwt != null) && SecurityUtils.isOrganizerOnly(authentication, jwt);
 
-        // Si se provee userOid explícito (ej. asignado administrativamente), se utiliza ese valor.
-        // Si quien llama es el propio organizador, se toma su propio OID del token.
-        // Si quien llama es Admin o Productor y NO se especifica userOid, NO se asigna el OID del administrador.
         String targetOid = null;
-        if (request.userOid() != null && !request.userOid().isBlank()) {
+        if (isOrganizerSelf) {
+            String callerOid = SecurityUtils.requireOrganizerOid(jwt);
+            if (request.userOid() != null && !request.userOid().isBlank()
+                    && !callerOid.equalsIgnoreCase(request.userOid().trim())) {
+                throw new AccessDeniedException("Organizador no puede reasignar el vinculo de propiedad");
+            }
+            // Existing links are preserved; new self contacts use the authenticated OID.
+            targetOid = callerOid;
+        } else if (request.userOid() != null && !request.userOid().isBlank()) {
+            if (authentication == null || authentication.getAuthorities().stream()
+                    .noneMatch(a -> "ROLE_Admin".equals(a.getAuthority()))) {
+                throw new AccessDeniedException("Solo Admin puede asignar el vinculo de propiedad");
+            }
             targetOid = request.userOid().trim();
-        } else if (isOrganizerSelf) {
-            targetOid = SecurityUtils.resolveOid(jwt);
         }
 
         final String finalOid = targetOid;
@@ -67,7 +74,7 @@ public class OrganizerContactService {
                     existing.setEmail(request.email().trim());
                     existing.setContactName(request.contactName() != null ? request.contactName().trim() : null);
                     existing.setPhone(request.phone() != null ? request.phone().trim() : null);
-                    if (finalOid != null && !finalOid.isBlank()) {
+                    if (!isOrganizerSelf && finalOid != null && !finalOid.isBlank()) {
                         existing.setUserOid(finalOid);
                     }
                     existing.setActive(true);
@@ -84,8 +91,7 @@ public class OrganizerContactService {
                 ));
 
         OrganizerContact saved = contactRepository.save(contact);
-        log.info("Contacto de organizador actualizado exitosamente: organizerId={}, email={}, userOid={}, actor={}",
-                organizerId, saved.getEmail(), saved.getUserOid(), actor);
+        log.info("Contacto de organizador actualizado exitosamente");
 
         return OrganizerContactResponseDTO.fromEntity(saved);
     }
@@ -116,21 +122,20 @@ public class OrganizerContactService {
             return false;
         }
         String cleanOrgId = organizerId.trim();
-        String callerOwnerId = SecurityUtils.resolveOwnerId(jwt);
+        String callerOwnerId = SecurityUtils.requireOrganizerOwnerId(jwt);
         if (callerOwnerId.equalsIgnoreCase(cleanOrgId)) {
             return true;
+        }
+        if (SecurityUtils.isCanonicalOwnerId(cleanOrgId)) {
+            return false;
         }
         Optional<OrganizerContact> contactOpt = contactRepository.findByOrganizerIdAndActiveTrue(cleanOrgId);
         if (contactOpt.isEmpty()) {
             return false;
         }
         OrganizerContact contact = contactOpt.get();
-        String oid = SecurityUtils.resolveOid(jwt);
+        String oid = SecurityUtils.requireOrganizerOid(jwt);
         if (oid != null && !oid.isBlank() && oid.equalsIgnoreCase(contact.getUserOid())) {
-            return true;
-        }
-        String email = SecurityUtils.resolveEmail(jwt);
-        if (email != null && !email.isBlank() && email.equalsIgnoreCase(contact.getEmail())) {
             return true;
         }
         return false;
@@ -141,17 +146,14 @@ public class OrganizerContactService {
         if (jwt == null) {
             return List.of();
         }
-        String ownerId = SecurityUtils.resolveOwnerId(jwt);
-        String oid = SecurityUtils.resolveOid(jwt);
-        String email = SecurityUtils.resolveEmail(jwt);
+        String ownerId = SecurityUtils.requireOrganizerOwnerId(jwt);
+        String oid = SecurityUtils.requireOrganizerOid(jwt);
 
         LinkedHashSet<String> combined = new LinkedHashSet<>();
         if (oid != null && !oid.isBlank()) {
             contactRepository.findByActiveTrueAndUserOid(oid.trim())
-                    .forEach(c -> combined.add(c.getOrganizerId()));
-        }
-        if (email != null && !email.isBlank()) {
-            contactRepository.findByActiveTrueAndEmailIgnoreCase(email.trim())
+                    .stream().filter(c -> !SecurityUtils.isCanonicalOwnerId(c.getOrganizerId())
+                            || ownerId.equalsIgnoreCase(c.getOrganizerId()))
                     .forEach(c -> combined.add(c.getOrganizerId()));
         }
         if (ownerId != null && !ownerId.isBlank()) {
@@ -163,9 +165,7 @@ public class OrganizerContactService {
     public void validateOrganizerOwnership(String organizerId, Authentication authentication, Jwt jwt) {
         if (SecurityUtils.isOrganizerOnly(authentication, jwt)) {
             if (!isAuthorizedForOrganizer(organizerId, authentication, jwt)) {
-                String callerOwnerId = (jwt != null) ? SecurityUtils.resolveOwnerId(jwt) : "unknown";
-                log.warn("Intento de acceso denegado a organizador ajeno: caller={}, targetOrganizer={}",
-                        callerOwnerId, organizerId);
+                log.warn("Intento de acceso denegado a organizador ajeno");
                 throw new AccessDeniedException("No está autorizado a consultar o administrar información de este organizador");
             }
         }

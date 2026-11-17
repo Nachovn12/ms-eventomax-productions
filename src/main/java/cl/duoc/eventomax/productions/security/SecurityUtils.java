@@ -9,6 +9,35 @@ import java.util.List;
 
 public final class SecurityUtils {
 
+    private static final String UUID_PATTERN = "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}";
+
+    /** Ownership is resolved only after the resource server validates the JWT.
+     * Legacy sub/OID strings remain usable as audit actors, not ownership proofs.
+     * Business aliases are scoped to the single tenant of the configured issuer.
+     */
+    public static String requireOrganizerOid(Jwt jwt) {
+        if (jwt == null || !(jwt.getClaims().get("oid") instanceof String oid)
+                || !(jwt.getClaims().get("tid") instanceof String tid)
+                || !oid.matches(UUID_PATTERN) || !tid.matches(UUID_PATTERN)) {
+            throw new AccessDeniedException("Se requiere identidad estable de organizador (tid y oid)");
+        }
+        // Entra's issuer contains its tenant; reject inconsistent signed claims too.
+        if (jwt.getIssuer() != null && jwt.getIssuer().getHost().equalsIgnoreCase("login.microsoftonline.com")
+                && !jwt.getIssuer().getPath().equalsIgnoreCase("/" + tid + "/v2.0")) {
+            throw new AccessDeniedException("Tenant de organizador incompatible con el emisor");
+        }
+        return oid.toLowerCase(java.util.Locale.ROOT);
+    }
+
+    public static String requireOrganizerOwnerId(Jwt jwt) {
+        String oid = requireOrganizerOid(jwt);
+        return jwt.getClaimAsString("tid").toLowerCase(java.util.Locale.ROOT) + ":" + oid;
+    }
+
+    public static boolean isCanonicalOwnerId(String value) {
+        return value != null && value.matches(UUID_PATTERN + ":" + UUID_PATTERN);
+    }
+
     private SecurityUtils() {
     }
 

@@ -42,7 +42,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @ActiveProfiles("test")
 class ProductionOrganizerIsolationIntegrationTest {
 
-    static final PostgreSQLContainer<?> DB = new PostgreSQLContainer<>(DockerImageName.parse("postgres:15-alpine"));
+    static final PostgreSQLContainer<?> DB = new PostgreSQLContainer<>(DockerImageName.parse("postgres:16-alpine"));
 
     static {
         DB.start();
@@ -77,7 +77,7 @@ class ProductionOrganizerIsolationIntegrationTest {
     @MockitoBean
     CatalogClient catalogClient;
 
-    private static final String TENANT_ID = "tenant-duoc-ep2";
+    private static final String TENANT_ID = "33333333-3333-4333-8333-333333333333";
     private static final String ORG_A_OID = "11111111-aaaa-bbbb-cccc-111111111111";
     private static final String ORG_A_CANONICAL = TENANT_ID + ":" + ORG_A_OID;
 
@@ -355,7 +355,7 @@ class ProductionOrganizerIsolationIntegrationTest {
     }
 
     @Test
-    @DisplayName("12. Organizador con JWT real de Microsoft Entra ID (OID GUID e email) accede a producción de 'org-ep2-demo-001' asociado en organizer_contacts")
+    @DisplayName("12. Organizador con claims Entra simulados (OID GUID e email) accede a producción de 'org-ep2-demo-001' asociado en organizer_contacts")
     void organizerWithRealEntraIdJwt_accessesProductionOfBusinessOrganizerId_whenMappedInOrganizerContacts() throws Exception {
         String entraOid = "d762a6e9-9134-4a4b-97e3-057bfd9d883b";
         String entraEmail = "organizador.cert@eventomax.cl";
@@ -376,7 +376,7 @@ class ProductionOrganizerIsolationIntegrationTest {
                 .authorities(new SimpleGrantedAuthority("SCOPE_access_as_user"), new SimpleGrantedAuthority("ROLE_Organizador"))
                 .jwt(j -> j
                         .claim("oid", entraOid)
-                        .claim("tid", "tenant-ep2-duoc")
+                        .claim("tid", "33333333-3333-4333-8333-333333333333")
                         .claim("preferred_username", entraEmail)
                         .claim("scp", "access_as_user")
                         .claim("roles", List.of("Organizador"))
@@ -427,7 +427,7 @@ class ProductionOrganizerIsolationIntegrationTest {
                 .authorities(new SimpleGrantedAuthority("SCOPE_access_as_user"), new SimpleGrantedAuthority("ROLE_Organizador"))
                 .jwt(j -> j
                         .claim("oid", attackerOid)
-                        .claim("tid", "tenant-ep2-duoc")
+                        .claim("tid", "33333333-3333-4333-8333-333333333333")
                         .claim("preferred_username", attackerEmail)
                         .claim("scp", "access_as_user")
                         .claim("roles", List.of("Organizador"))
