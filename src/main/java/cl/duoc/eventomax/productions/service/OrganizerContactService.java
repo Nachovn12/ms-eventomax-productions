@@ -50,8 +50,16 @@ public class OrganizerContactService {
         validateOrganizerOwnership(organizerId, authentication, jwt);
 
         String actor = (jwt != null) ? SecurityUtils.resolveOwnerId(jwt) : "system";
+        boolean hasAdmin = authentication != null && authentication.getAuthorities() != null
+                && authentication.getAuthorities().stream()
+                .anyMatch(a -> "ROLE_Admin".equals(a.getAuthority()));
+        boolean hasProducer = authentication != null && authentication.getAuthorities() != null
+                && authentication.getAuthorities().stream()
+                .anyMatch(a -> "ROLE_Productor".equals(a.getAuthority()));
         boolean isOrganizerSelf = (jwt != null) && SecurityUtils.isOrganizerOnly(authentication, jwt);
+        boolean isProducerSelfOnly = !hasAdmin && !isOrganizerSelf && hasProducer;
 
+        String effectiveOrganizerId = (organizerId != null) ? organizerId.trim() : "";
         String targetOid = null;
         if (isOrganizerSelf) {
             String callerOid = SecurityUtils.requireOrganizerOid(jwt);
@@ -61,22 +69,36 @@ public class OrganizerContactService {
             }
             // Existing links are preserved; new self contacts use the authenticated OID.
             targetOid = callerOid;
+        } else if (isProducerSelfOnly) {
+            String callerOwnerId = SecurityUtils.requireOrganizerOwnerId(jwt);
+            String callerOid = SecurityUtils.requireOrganizerOid(jwt);
+            if (!callerOwnerId.equalsIgnoreCase(effectiveOrganizerId)) {
+                log.warn("Productor sin rol Admin intentó modificar un contacto ajeno");
+                throw new AccessDeniedException("Productor solo puede registrar o actualizar su propio contacto canónico");
+            }
+            if (request.userOid() != null && !request.userOid().isBlank()
+                    && !callerOid.equalsIgnoreCase(request.userOid().trim())) {
+                throw new AccessDeniedException("Productor no puede asignar o modificar el vinculo de propiedad de terceros");
+            }
+            effectiveOrganizerId = callerOwnerId;
+            targetOid = callerOid;
         } else if (request.userOid() != null && !request.userOid().isBlank()) {
-            if (authentication == null || authentication.getAuthorities().stream()
-                    .noneMatch(a -> "ROLE_Admin".equals(a.getAuthority()))) {
+            if (!hasAdmin) {
                 throw new AccessDeniedException("Solo Admin puede asignar el vinculo de propiedad");
             }
             targetOid = request.userOid().trim();
         }
 
         final String finalOid = targetOid;
+        final String finalOrganizerId = effectiveOrganizerId;
+        final boolean preserveExistingOid = isOrganizerSelf || isProducerSelfOnly;
 
-        OrganizerContact contact = contactRepository.findByOrganizerId(organizerId)
+        OrganizerContact contact = contactRepository.findByOrganizerId(finalOrganizerId)
                 .map(existing -> {
                     existing.setEmail(request.email().trim());
                     existing.setContactName(request.contactName() != null ? request.contactName().trim() : null);
                     existing.setPhone(request.phone() != null ? request.phone().trim() : null);
-                    if (!isOrganizerSelf && finalOid != null && !finalOid.isBlank()) {
+                    if (!preserveExistingOid && finalOid != null && !finalOid.isBlank()) {
                         existing.setUserOid(finalOid);
                     }
                     existing.setActive(true);
@@ -84,7 +106,7 @@ public class OrganizerContactService {
                     return existing;
                 })
                 .orElseGet(() -> new OrganizerContact(
-                        organizerId.trim(),
+                        finalOrganizerId,
                         request.email().trim(),
                         request.contactName() != null ? request.contactName().trim() : null,
                         request.phone() != null ? request.phone().trim() : null,
@@ -124,6 +146,32 @@ public class OrganizerContactService {
         int inserted = contactRepository.insertIfAbsent(ownerId, email, contactName, oid, now, ownerId);
         if (inserted > 0) {
             log.info("[SELF_CONTACT_PROVISIONED] Contacto propio aprovisionado automáticamente para '{}'", ownerId);
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * Aprovisiona de forma idempotente un contacto (para Organizador Entra verificado o nuevo cliente externo)
+     * dentro de la transacción activa. Nunca sobrescribe un contacto previamente registrado.
+     */
+    @Transactional
+    public boolean ensureContactIfAbsent(String organizerId, String email, String contactName, String userOid, String actor) {
+        if (organizerId == null || organizerId.isBlank() || !SecurityUtils.isDeliverableEmail(email)) {
+            return false;
+        }
+        String cleanOrgId = organizerId.trim();
+        String cleanEmail = email.trim();
+        String cleanName = (contactName != null && !contactName.isBlank()) ? contactName.trim() : null;
+        if (cleanName != null && cleanName.length() > 150) {
+            cleanName = cleanName.substring(0, 150);
+        }
+        String cleanOid = (userOid != null && !userOid.isBlank()) ? userOid.trim().toLowerCase(java.util.Locale.ROOT) : null;
+        String cleanActor = (actor != null && !actor.isBlank()) ? actor.trim() : "system";
+        LocalDateTime now = LocalDateTime.now().truncatedTo(ChronoUnit.MICROS);
+        int inserted = contactRepository.insertIfAbsent(cleanOrgId, cleanEmail, cleanName, cleanOid, now, cleanActor);
+        if (inserted > 0) {
+            log.info("[CONTACT_PROVISIONED] Contacto registrado idempotentemente para '{}'", cleanOrgId);
             return true;
         }
         return false;

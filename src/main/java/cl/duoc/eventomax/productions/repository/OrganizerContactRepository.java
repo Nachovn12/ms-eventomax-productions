@@ -24,6 +24,8 @@ public interface OrganizerContactRepository extends JpaRepository<OrganizerConta
 
     java.util.List<OrganizerContact> findByActiveTrueAndEmailIgnoreCase(String email);
 
+    java.util.List<OrganizerContact> findByActiveTrueAndUserOidIsNull();
+
     @Modifying
     @Query(value = """
             INSERT INTO organizer_contacts

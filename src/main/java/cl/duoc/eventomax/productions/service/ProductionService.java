@@ -110,9 +110,16 @@ public class ProductionService {
                 .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
     }
 
+    public record ContactProvisionRequest(
+            String organizerId,
+            String email,
+            String contactName,
+            String userOid
+    ) {}
+
     @Transactional
     public ProductionResponseDTO createProduction(ProductionRequestDTO request, String actor) {
-        return createProduction(request, actor, null);
+        return createProductionInternal(request, actor, null, null);
     }
 
     @Transactional
@@ -120,6 +127,22 @@ public class ProductionService {
             ProductionRequestDTO request,
             String actor,
             org.springframework.security.oauth2.jwt.Jwt selfContactJwt) {
+        return createProductionInternal(request, actor, selfContactJwt, null);
+    }
+
+    @Transactional
+    public ProductionResponseDTO createProductionWithContact(
+            ProductionRequestDTO request,
+            String actor,
+            ContactProvisionRequest contactProvision) {
+        return createProductionInternal(request, actor, null, contactProvision);
+    }
+
+    private ProductionResponseDTO createProductionInternal(
+            ProductionRequestDTO request,
+            String actor,
+            org.springframework.security.oauth2.jwt.Jwt selfContactJwt,
+            ContactProvisionRequest contactProvision) {
 
         Production production = new Production();
 
@@ -141,8 +164,18 @@ public class ProductionService {
 
         Production saved = repository.save(production);
 
-        if (selfContactJwt != null && organizerContactService != null) {
-            organizerContactService.ensureSelfContactFromJwt(selfContactJwt);
+        if (organizerContactService != null) {
+            if (selfContactJwt != null) {
+                organizerContactService.ensureSelfContactFromJwt(selfContactJwt);
+            } else if (contactProvision != null) {
+                organizerContactService.ensureContactIfAbsent(
+                        contactProvision.organizerId(),
+                        contactProvision.email(),
+                        contactProvision.contactName(),
+                        contactProvision.userOid(),
+                        actor
+                );
+            }
         }
 
         try {

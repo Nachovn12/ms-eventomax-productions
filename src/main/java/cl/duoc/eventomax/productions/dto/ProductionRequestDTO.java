@@ -1,6 +1,7 @@
 package cl.duoc.eventomax.productions.dto;
 
 import jakarta.validation.constraints.AssertTrue;
+import jakarta.validation.constraints.Email;
 import jakarta.validation.constraints.FutureOrPresent;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
@@ -12,7 +13,7 @@ import io.swagger.v3.oas.annotations.media.Schema;
 @Schema(description = "Objeto para la creación de una solicitud de producción de evento")
 public record ProductionRequestDTO(
 
-        @Schema(description = "ID o identificador del organizador (opcional en modo SELF; obligatorio en modo EXTERNAL o legacy)", example = "org_123456")
+        @Schema(description = "ID o identificador del organizador (opcional en modo SELF o NEW_EXTERNAL; obligatorio en otros casos)", example = "org_123456")
         @Size(max = 255, message = "El organizador no debe exceder 255 caracteres")
         String organizerId,
 
@@ -40,22 +41,44 @@ public record ProductionRequestDTO(
         String crewName,
 
         @Schema(description = "Modalidad de asignación de organizador (SELF o EXTERNAL). Opcional por compatibilidad legacy.", example = "SELF")
-        OrganizerMode organizerMode
+        OrganizerMode organizerMode,
+
+        @Schema(description = "Submodalidad cuando organizerMode=EXTERNAL (ENTRA_ORGANIZER, EXISTING_EXTERNAL o NEW_EXTERNAL)")
+        ExternalOrganizerType externalOrganizerType,
+
+        @Schema(description = "Nombre del cliente externo (obligatorio únicamente en externalOrganizerType=NEW_EXTERNAL)")
+        @Size(max = 150, message = "El nombre del cliente externo no debe exceder 150 caracteres")
+        String externalClientName,
+
+        @Schema(description = "Correo de notificaciones del nuevo cliente externo (obligatorio únicamente en externalOrganizerType=NEW_EXTERNAL)")
+        @Email(message = "El formato del correo del cliente externo no es válido")
+        @Size(max = 255, message = "El correo del cliente externo no debe exceder 255 caracteres")
+        String externalClientEmail
 
 ) {
     public ProductionRequestDTO(String organizerId, String name, LocalDateTime scheduledAt, String location) {
-        this(organizerId, name, scheduledAt, location, null, null, null);
+        this(organizerId, name, scheduledAt, location, null, null, null, null, null, null);
     }
 
     public ProductionRequestDTO(String organizerId, String name, LocalDateTime scheduledAt, String location,
                                 String crewId, String crewName) {
-        this(organizerId, name, scheduledAt, location, crewId, crewName, null);
+        this(organizerId, name, scheduledAt, location, crewId, crewName, null, null, null, null);
+    }
+
+    public ProductionRequestDTO(String organizerId, String name, LocalDateTime scheduledAt, String location,
+                                String crewId, String crewName, OrganizerMode organizerMode) {
+        this(organizerId, name, scheduledAt, location, crewId, crewName, organizerMode, null, null, null);
     }
 
     @AssertTrue(message = "El organizador es obligatorio")
     public boolean isOrganizerIdPresentWhenRequired() {
-        return organizerMode == OrganizerMode.SELF
-                || (organizerId != null && !organizerId.isBlank());
+        if (organizerMode == OrganizerMode.SELF) {
+            return true;
+        }
+        if (organizerMode == OrganizerMode.EXTERNAL && externalOrganizerType == ExternalOrganizerType.NEW_EXTERNAL) {
+            return true;
+        }
+        return organizerId != null && !organizerId.isBlank();
     }
 }
 
