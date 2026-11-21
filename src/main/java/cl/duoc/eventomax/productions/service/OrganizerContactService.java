@@ -13,6 +13,8 @@ import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.LocalDateTime;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -94,6 +96,37 @@ public class OrganizerContactService {
         log.info("Contacto de organizador actualizado exitosamente");
 
         return OrganizerContactResponseDTO.fromEntity(saved);
+    }
+
+    /**
+     * Aprovisiona de forma idempotente el contacto propio del usuario autenticado (tid:oid)
+     * utilizando exclusivamente claims validados del JWT.
+     * - Si ya existe contacto para organizer_id, NO sobrescribe email ni user_oid (ON CONFLICT DO NOTHING).
+     * - Si el JWT no contiene un correo sintácticamente entregable, no inserta fila y deja constancia en log.
+     * - Participa en la transacción del llamador para garantizar atomicidad y evitar contactos huérfanos.
+     */
+    @Transactional
+    public boolean ensureSelfContactFromJwt(Jwt jwt) {
+        if (jwt == null) {
+            return false;
+        }
+        String ownerId = SecurityUtils.requireOrganizerOwnerId(jwt);
+        String oid = SecurityUtils.requireOrganizerOid(jwt);
+        String email = SecurityUtils.resolveDeliverableEmail(jwt);
+        if (email == null) {
+            log.warn("[SELF_CONTACT_SKIPPED] El token para '{}' no entrega un correo entregable apto (ausente, inválido o #EXT#). "
+                            + "La producción se creará igualmente, pero las notificaciones no podrán entregarse hasta registrar un contacto autorizado.",
+                    ownerId);
+            return false;
+        }
+        String contactName = SecurityUtils.resolveDisplayName(jwt);
+        LocalDateTime now = LocalDateTime.now().truncatedTo(ChronoUnit.MICROS);
+        int inserted = contactRepository.insertIfAbsent(ownerId, email, contactName, oid, now, ownerId);
+        if (inserted > 0) {
+            log.info("[SELF_CONTACT_PROVISIONED] Contacto propio aprovisionado automáticamente para '{}'", ownerId);
+            return true;
+        }
+        return false;
     }
 
     @Transactional(readOnly = true)

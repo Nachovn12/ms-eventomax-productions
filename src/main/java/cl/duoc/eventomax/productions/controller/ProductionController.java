@@ -1,6 +1,7 @@
 package cl.duoc.eventomax.productions.controller;
 
 import cl.duoc.eventomax.productions.dto.ContractedServiceDto;
+import cl.duoc.eventomax.productions.dto.OrganizerMode;
 import cl.duoc.eventomax.productions.dto.ProductionRequestDTO;
 import cl.duoc.eventomax.productions.dto.ProductionResponseDTO;
 import cl.duoc.eventomax.productions.dto.ProductionStatusUpdateDTO;
@@ -55,6 +56,32 @@ public class ProductionController {
         }
         String actor = cl.duoc.eventomax.productions.security.SecurityUtils.resolveOwnerId(jwt);
         boolean organizerOnly = cl.duoc.eventomax.productions.security.SecurityUtils.isOrganizerOnly(authentication, jwt);
+        OrganizerMode mode = request.organizerMode();
+
+        if (mode == OrganizerMode.SELF) {
+            String canonicalOwnerId = cl.duoc.eventomax.productions.security.SecurityUtils.requireOrganizerOwnerId(jwt);
+            if (request.organizerId() != null && !request.organizerId().isBlank()
+                    && !canonicalOwnerId.equalsIgnoreCase(request.organizerId().trim())) {
+                throw new IllegalArgumentException(
+                        "En modo SELF el identificador de organizador no puede diferir de la identidad autenticada");
+            }
+            ProductionRequestDTO selfRequest = new ProductionRequestDTO(
+                    canonicalOwnerId,
+                    request.name(),
+                    request.scheduledAt(),
+                    request.location(),
+                    request.crewId(),
+                    request.crewName(),
+                    OrganizerMode.SELF
+            );
+            ProductionResponseDTO response = service.createProduction(selfRequest, canonicalOwnerId, jwt);
+            return ResponseEntity.status(HttpStatus.CREATED).body(response);
+        }
+
+        if (mode == OrganizerMode.EXTERNAL && organizerOnly) {
+            throw new org.springframework.security.access.AccessDeniedException(
+                    "Organizador no puede crear producciones en modo EXTERNAL");
+        }
 
         ProductionRequestDTO effectiveRequest = request;
         if (organizerOnly) {
@@ -76,7 +103,15 @@ public class ProductionController {
                         .findFirst()
                         .orElse(actor);
             }
-            effectiveRequest = new ProductionRequestDTO(targetOrganizerId, request.name(), request.scheduledAt(), request.location());
+            effectiveRequest = new ProductionRequestDTO(
+                    targetOrganizerId,
+                    request.name(),
+                    request.scheduledAt(),
+                    request.location(),
+                    request.crewId(),
+                    request.crewName(),
+                    mode
+            );
         }
 
         ProductionResponseDTO response = service.createProduction(effectiveRequest, actor);

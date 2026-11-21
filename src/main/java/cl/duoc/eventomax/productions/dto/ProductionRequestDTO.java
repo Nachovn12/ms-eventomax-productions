@@ -1,5 +1,6 @@
 package cl.duoc.eventomax.productions.dto;
 
+import jakarta.validation.constraints.AssertTrue;
 import jakarta.validation.constraints.FutureOrPresent;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
@@ -11,8 +12,7 @@ import io.swagger.v3.oas.annotations.media.Schema;
 @Schema(description = "Objeto para la creación de una solicitud de producción de evento")
 public record ProductionRequestDTO(
 
-        @Schema(description = "ID o identificador del organizador", example = "org_123456")
-        @NotBlank(message = "El organizador es obligatorio")
+        @Schema(description = "ID o identificador del organizador (opcional en modo SELF; obligatorio en modo EXTERNAL o legacy)", example = "org_123456")
         @Size(max = 255, message = "El organizador no debe exceder 255 caracteres")
         String organizerId,
 
@@ -37,11 +37,25 @@ public record ProductionRequestDTO(
 
         @Schema(description = "Nombre opcional de la cuadrilla asignada", example = "Cuadrilla Técnica Alpha")
         @Size(max = 150, message = "El nombre de la cuadrilla no debe exceder 150 caracteres")
-        String crewName
+        String crewName,
+
+        @Schema(description = "Modalidad de asignación de organizador (SELF o EXTERNAL). Opcional por compatibilidad legacy.", example = "SELF")
+        OrganizerMode organizerMode
 
 ) {
     public ProductionRequestDTO(String organizerId, String name, LocalDateTime scheduledAt, String location) {
-        this(organizerId, name, scheduledAt, location, null, null);
+        this(organizerId, name, scheduledAt, location, null, null, null);
+    }
+
+    public ProductionRequestDTO(String organizerId, String name, LocalDateTime scheduledAt, String location,
+                                String crewId, String crewName) {
+        this(organizerId, name, scheduledAt, location, crewId, crewName, null);
+    }
+
+    @AssertTrue(message = "El organizador es obligatorio")
+    public boolean isOrganizerIdPresentWhenRequired() {
+        return organizerMode == OrganizerMode.SELF
+                || (organizerId != null && !organizerId.isBlank());
     }
 }
 

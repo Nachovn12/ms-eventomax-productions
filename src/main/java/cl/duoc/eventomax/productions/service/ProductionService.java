@@ -53,6 +53,7 @@ public class ProductionService {
     private final ProductionStateCoordinator stateCoordinator;
     private final ProductionContractedServiceRepository contractedServiceRepository;
     private final ProductionQuoteCommandListener quoteCommandListener;
+    private final OrganizerContactService organizerContactService;
     private final ObjectMapper objectMapper;
 
     public ProductionService(
@@ -64,7 +65,22 @@ public class ProductionService {
             InventoryReservationTaskService taskService,
             ProductionStateCoordinator stateCoordinator) {
         this(repository, eventPublisher, catalogClient, outboxEventRepository,
-                inventoryReservationTaskRepository, taskService, stateCoordinator, null, null);
+                inventoryReservationTaskRepository, taskService, stateCoordinator, null, null, null);
+    }
+
+    public ProductionService(
+            ProductionRepository repository,
+            ApplicationEventPublisher eventPublisher,
+            CatalogClient catalogClient,
+            OutboxEventRepository outboxEventRepository,
+            InventoryReservationTaskRepository inventoryReservationTaskRepository,
+            InventoryReservationTaskService taskService,
+            ProductionStateCoordinator stateCoordinator,
+            ProductionContractedServiceRepository contractedServiceRepository,
+            ProductionQuoteCommandListener quoteCommandListener) {
+        this(repository, eventPublisher, catalogClient, outboxEventRepository,
+                inventoryReservationTaskRepository, taskService, stateCoordinator,
+                contractedServiceRepository, quoteCommandListener, null);
     }
 
     @Autowired
@@ -77,7 +93,8 @@ public class ProductionService {
             InventoryReservationTaskService taskService,
             ProductionStateCoordinator stateCoordinator,
             @Autowired(required = false) ProductionContractedServiceRepository contractedServiceRepository,
-            @Autowired(required = false) ProductionQuoteCommandListener quoteCommandListener) {
+            @Autowired(required = false) ProductionQuoteCommandListener quoteCommandListener,
+            @Autowired(required = false) OrganizerContactService organizerContactService) {
         this.repository = repository;
         this.eventPublisher = eventPublisher;
         this.catalogClient = catalogClient;
@@ -87,6 +104,7 @@ public class ProductionService {
         this.stateCoordinator = stateCoordinator;
         this.contractedServiceRepository = contractedServiceRepository;
         this.quoteCommandListener = quoteCommandListener;
+        this.organizerContactService = organizerContactService;
         this.objectMapper = new ObjectMapper()
                 .registerModule(new JavaTimeModule())
                 .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
@@ -94,6 +112,14 @@ public class ProductionService {
 
     @Transactional
     public ProductionResponseDTO createProduction(ProductionRequestDTO request, String actor) {
+        return createProduction(request, actor, null);
+    }
+
+    @Transactional
+    public ProductionResponseDTO createProduction(
+            ProductionRequestDTO request,
+            String actor,
+            org.springframework.security.oauth2.jwt.Jwt selfContactJwt) {
 
         Production production = new Production();
 
@@ -114,6 +140,10 @@ public class ProductionService {
         }
 
         Production saved = repository.save(production);
+
+        if (selfContactJwt != null && organizerContactService != null) {
+            organizerContactService.ensureSelfContactFromJwt(selfContactJwt);
+        }
 
         try {
             Instant now = Instant.now();
