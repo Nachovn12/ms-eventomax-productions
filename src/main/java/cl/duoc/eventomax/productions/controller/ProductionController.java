@@ -68,6 +68,7 @@ public class ProductionController {
             throw new org.springframework.security.access.AccessDeniedException("Identidad requerida");
         }
         String actor = cl.duoc.eventomax.productions.security.SecurityUtils.resolveOwnerId(jwt);
+        String actorDisplayName = cl.duoc.eventomax.productions.security.SecurityUtils.resolveDisplayName(jwt);
         boolean organizerOnly = cl.duoc.eventomax.productions.security.SecurityUtils.isOrganizerOnly(authentication, jwt);
         OrganizerMode mode = request.organizerMode();
 
@@ -100,7 +101,7 @@ public class ProductionController {
                 throw new org.springframework.security.access.AccessDeniedException(
                         "Organizador no puede crear producciones en modo EXTERNAL");
             }
-            return handleExternalCreation(request, actor);
+            return handleExternalCreation(request, actor, actorDisplayName);
         }
 
         // Ruta legacy (organizerMode == null): rechazar campos exclusivos del contrato EXTERNAL
@@ -174,7 +175,9 @@ public class ProductionController {
             }
         }
 
-        ProductionResponseDTO response = service.createProduction(effectiveRequest, actor);
+        ProductionResponseDTO response = (actorDisplayName != null)
+                ? service.createProduction(effectiveRequest, actor, actorDisplayName)
+                : service.createProduction(effectiveRequest, actor);
 
         return ResponseEntity
                 .status(HttpStatus.CREATED)
@@ -187,7 +190,8 @@ public class ProductionController {
                 || (request.externalClientEmail() != null && !request.externalClientEmail().isBlank());
     }
 
-    private ResponseEntity<ProductionResponseDTO> handleExternalCreation(ProductionRequestDTO request, String actor) {
+    private ResponseEntity<ProductionResponseDTO> handleExternalCreation(
+            ProductionRequestDTO request, String actor, String actorDisplayName) {
         ExternalOrganizerType extType = request.externalOrganizerType();
         boolean hasEmailInput = request.externalClientEmail() != null && !request.externalClientEmail().isBlank();
         boolean hasNameInput = request.externalClientName() != null && !request.externalClientName().isBlank();
@@ -223,7 +227,9 @@ public class ProductionController {
                     request.externalClientName().trim(),
                     null
             );
-            ProductionResponseDTO created = service.createProductionWithContact(effective, actor, provision);
+            ProductionResponseDTO created = (actorDisplayName != null)
+                    ? service.createProductionWithContact(effective, actor, actorDisplayName, provision)
+                    : service.createProductionWithContact(effective, actor, provision);
             return ResponseEntity.status(HttpStatus.CREATED).body(created);
         }
 
@@ -267,7 +273,9 @@ public class ProductionController {
                             verified.displayName(),
                             verified.userOid())
                     : null;
-            ProductionResponseDTO created = service.createProductionWithContact(effective, actor, provision);
+            ProductionResponseDTO created = (actorDisplayName != null)
+                    ? service.createProductionWithContact(effective, actor, actorDisplayName, provision)
+                    : service.createProductionWithContact(effective, actor, provision);
             return ResponseEntity.status(HttpStatus.CREATED).body(created);
         }
 
@@ -301,7 +309,9 @@ public class ProductionController {
                     null,
                     null
             );
-            ProductionResponseDTO created = service.createProduction(effective, actor);
+            ProductionResponseDTO created = (actorDisplayName != null)
+                    ? service.createProduction(effective, actor, actorDisplayName)
+                    : service.createProduction(effective, actor);
             return ResponseEntity.status(HttpStatus.CREATED).body(created);
         }
 
@@ -310,7 +320,9 @@ public class ProductionController {
             throw new ContactConflictException(
                     "Para registrar un cliente nuevo con correo utilice externalOrganizerType=NEW_EXTERNAL.");
         }
-        ProductionResponseDTO created = service.createProduction(request, actor);
+        ProductionResponseDTO created = (actorDisplayName != null)
+                ? service.createProduction(request, actor, actorDisplayName)
+                : service.createProduction(request, actor);
         return ResponseEntity.status(HttpStatus.CREATED).body(created);
     }
 
@@ -420,8 +432,11 @@ public class ProductionController {
             }
         }
 
-        String actor = jwt.getSubject();
-        ProductionResponseDTO updated = service.updateStatus(id, request, actor);
+        String actor = cl.duoc.eventomax.productions.security.SecurityUtils.resolveOwnerId(jwt);
+        String actorDisplayName = cl.duoc.eventomax.productions.security.SecurityUtils.resolveDisplayName(jwt);
+        ProductionResponseDTO updated = (actorDisplayName != null)
+                ? service.updateStatus(id, request, actor, actorDisplayName)
+                : service.updateStatus(id, request, actor);
         return ResponseEntity.ok(updated);
 
     }

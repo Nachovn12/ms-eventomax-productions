@@ -196,6 +196,12 @@ public class ProductionStateCoordinator {
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public Production completeConfirmation(
             Long id, String actor, Long generation, List<cl.duoc.eventomax.productions.dto.ContractedServiceDto> contractedServices) {
+        return completeConfirmation(id, actor, null, generation, contractedServices);
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public Production completeConfirmation(
+            Long id, String actor, String actorDisplayName, Long generation, List<cl.duoc.eventomax.productions.dto.ContractedServiceDto> contractedServices) {
         Production production = repository.findForUpdate(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Produccion no encontrada con id: " + id));
 
@@ -268,7 +274,7 @@ public class ProductionStateCoordinator {
                 }
             }
 
-            publishStatusChangedEventAndOutbox(saved, previousStatus, actor, contractedServices);
+            publishStatusChangedEventAndOutbox(saved, previousStatus, actor, actorDisplayName, contractedServices);
 
             return saved;
         } catch (Exception e) {
@@ -338,6 +344,11 @@ public class ProductionStateCoordinator {
 
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public Production executeLocalCancellation(Long id, String actor) {
+        return executeLocalCancellation(id, actor, null);
+    }
+
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public Production executeLocalCancellation(Long id, String actor, String actorDisplayName) {
         Production production = repository.findForUpdate(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Produccion no encontrada con id: " + id));
 
@@ -353,17 +364,23 @@ public class ProductionStateCoordinator {
             taskService.markCompensating(id, gen, "Produccion cancelada");
         }
 
-        publishStatusChangedEventAndOutbox(saved, previousStatus, actor);
+        publishStatusChangedEventAndOutbox(saved, previousStatus, actor, actorDisplayName, null);
         return saved;
     }
 
     @Transactional
     public Production executeStandardStatusUpdate(Long id, ProductionStatus nextStatus, String actor) {
-        return executeStandardStatusUpdate(id, nextStatus, null, null, actor);
+        return executeStandardStatusUpdate(id, nextStatus, null, null, actor, null);
     }
 
     @Transactional
     public Production executeStandardStatusUpdate(Long id, ProductionStatus nextStatus, String crewId, String crewName, String actor) {
+        return executeStandardStatusUpdate(id, nextStatus, crewId, crewName, actor, null);
+    }
+
+    @Transactional
+    public Production executeStandardStatusUpdate(
+            Long id, ProductionStatus nextStatus, String crewId, String crewName, String actor, String actorDisplayName) {
         Production production = repository.findForUpdate(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Produccion no encontrada con id: " + id));
 
@@ -380,16 +397,12 @@ public class ProductionStateCoordinator {
         production.setStatus(nextStatus);
         Production saved = repository.saveAndFlush(production);
 
-        publishStatusChangedEventAndOutbox(saved, previousStatus, actor);
+        publishStatusChangedEventAndOutbox(saved, previousStatus, actor, actorDisplayName, null);
         return saved;
     }
 
-    private void publishStatusChangedEventAndOutbox(Production updated, ProductionStatus previousStatus, String actor) {
-        publishStatusChangedEventAndOutbox(updated, previousStatus, actor, null);
-    }
-
     private void publishStatusChangedEventAndOutbox(
-            Production updated, ProductionStatus previousStatus, String actor, List<cl.duoc.eventomax.productions.dto.ContractedServiceDto> services) {
+            Production updated, ProductionStatus previousStatus, String actor, String actorDisplayName, List<cl.duoc.eventomax.productions.dto.ContractedServiceDto> services) {
         Instant now = Instant.now();
         var trace = TraceContext.current();
         ProductionStatusChangedEvent statusEvent = new ProductionStatusChangedEvent(
@@ -416,6 +429,8 @@ public class ProductionStateCoordinator {
                             trace.traceId(),
                             trace.correlationId(),
                             actor,
+                            actorDisplayName,
+                            "ms-eventomax-productions",
                             statusEvent
                     );
 
