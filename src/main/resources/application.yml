@@ -68,3 +68,14 @@ eventomax:
         email: email.send
         crew: crew.ticket
         quote: quote.gen
+  graph:
+    enabled: ${EVENTOMAX_GRAPH_ENABLED:false}
+    tenant-id: ${EVENTOMAX_GRAPH_TENANT_ID:}
+    client-id: ${EVENTOMAX_GRAPH_CLIENT_ID:}
+    client-secret: ${EVENTOMAX_GRAPH_CLIENT_SECRET:}
+    service-principal-id: ${EVENTOMAX_GRAPH_SERVICE_PRINCIPAL_ID:}
+    organizer-app-role-id: ${EVENTOMAX_GRAPH_ORGANIZER_ROLE_ID:}
+    connect-timeout: ${EVENTOMAX_GRAPH_CONNECT_TIMEOUT:3s}
+    read-timeout: ${EVENTOMAX_GRAPH_READ_TIMEOUT:5s}
+    cache-ttl: ${EVENTOMAX_GRAPH_CACHE_TTL:5m}
+    max-pages: ${EVENTOMAX_GRAPH_MAX_PAGES:10}

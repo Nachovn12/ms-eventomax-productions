@@ -6,10 +6,14 @@ import org.springframework.security.oauth2.jwt.Jwt;
 
 import java.util.Collection;
 import java.util.List;
+import java.util.Locale;
+import java.util.regex.Pattern;
 
 public final class SecurityUtils {
 
     private static final String UUID_PATTERN = "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}";
+    private static final Pattern DELIVERABLE_EMAIL_PATTERN =
+            Pattern.compile("^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}$");
 
     /** Ownership is resolved only after the resource server validates the JWT.
      * Legacy sub/OID strings remain usable as audit actors, not ownership proofs.
@@ -122,6 +126,53 @@ public final class SecurityUtils {
             return upn.trim();
         }
         return null;
+    }
+
+    /**
+     * Extrae el primer correo sintácticamente entregable desde los claims del JWT validado
+     * (preferred_username, email, upn), excluyendo cuentas invitadas (#EXT#) y valores inválidos.
+     * NOTA: Valida únicamente aptitud sintáctica; NO certifica verificación de buzón.
+     */
+    public static String resolveDeliverableEmail(Jwt jwt) {
+        if (jwt == null) {
+            return null;
+        }
+        for (String claimName : List.of("preferred_username", "email", "upn")) {
+            String candidate = jwt.getClaimAsString(claimName);
+            if (isDeliverableEmail(candidate)) {
+                return candidate.trim();
+            }
+        }
+        return null;
+    }
+
+    public static boolean isDeliverableEmail(String candidate) {
+        if (candidate == null || candidate.isBlank()) {
+            return false;
+        }
+        String trimmed = candidate.trim();
+        if (trimmed.length() > 255) {
+            return false;
+        }
+        if (trimmed.toUpperCase(Locale.ROOT).contains("#EXT#")) {
+            return false;
+        }
+        return DELIVERABLE_EMAIL_PATTERN.matcher(trimmed).matches();
+    }
+
+    /**
+     * Extrae el nombre visible desde el claim 'name' del JWT validado (máx. 150 caracteres).
+     */
+    public static String resolveDisplayName(Jwt jwt) {
+        if (jwt == null) {
+            return null;
+        }
+        String name = jwt.getClaimAsString("name");
+        if (name == null || name.isBlank()) {
+            return null;
+        }
+        String trimmed = name.trim();
+        return trimmed.length() > 150 ? trimmed.substring(0, 150) : trimmed;
     }
 
     /**

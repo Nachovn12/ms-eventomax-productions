@@ -1,5 +1,7 @@
 package cl.duoc.eventomax.productions.event;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
+
 import java.time.Instant;
 import java.util.UUID;
 
@@ -12,6 +14,8 @@ public class KafkaEventEnvelope<T> {
     private String traceId;
     private String correlationId;
     private String actor;
+    @JsonInclude(JsonInclude.Include.NON_NULL)
+    private String actorDisplayName;
     private String source = "ms-eventomax-productions";
     private T payload;
 
@@ -19,18 +23,34 @@ public class KafkaEventEnvelope<T> {
     }
 
     public KafkaEventEnvelope(UUID eventId, String type, Instant timestamp, String traceId, String correlationId, String actor, T payload) {
-        this(eventId, type, timestamp, traceId, correlationId, actor, "ms-eventomax-productions", payload);
+        this(eventId, type, timestamp, traceId, correlationId, actor, null, "ms-eventomax-productions", payload);
     }
 
     public KafkaEventEnvelope(UUID eventId, String type, Instant timestamp, String traceId, String correlationId, String actor, String source, T payload) {
+        this(eventId, type, timestamp, traceId, correlationId, actor, null, source, payload);
+    }
+
+    public KafkaEventEnvelope(UUID eventId, String type, Instant timestamp, String traceId, String correlationId, String actor, String actorDisplayName, String source, T payload) {
         this.eventId = eventId;
         this.type = type;
         this.timestamp = timestamp;
         this.traceId = traceId;
         this.correlationId = correlationId;
         this.actor = actor;
+        this.actorDisplayName = normalizeActorDisplayName(actorDisplayName);
         this.source = (source != null && !source.isBlank()) ? source : "ms-eventomax-productions";
         this.payload = payload;
+    }
+
+    private static String normalizeActorDisplayName(String value) {
+        if (value == null) {
+            return null;
+        }
+        String trimmed = value.trim();
+        if (trimmed.isEmpty()) {
+            return null;
+        }
+        return trimmed.length() > 150 ? trimmed.substring(0, 150) : trimmed;
     }
 
     public String getSchemaVersion() {
@@ -87,6 +107,14 @@ public class KafkaEventEnvelope<T> {
 
     public void setActor(String actor) {
         this.actor = actor;
+    }
+
+    public String getActorDisplayName() {
+        return actorDisplayName;
+    }
+
+    public void setActorDisplayName(String actorDisplayName) {
+        this.actorDisplayName = normalizeActorDisplayName(actorDisplayName);
     }
 
     public String getSource() {
