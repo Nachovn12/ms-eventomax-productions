@@ -131,6 +131,12 @@ public class MicrosoftGraphProperties {
                 && hasText(organizerAppRoleId);
     }
 
+    public boolean isUserLookupConfigured() {
+        return hasText(tenantId)
+                && hasText(clientId)
+                && hasText(clientSecret);
+    }
+
     private static boolean hasText(String value) {
         return value != null && !value.isBlank();
     }

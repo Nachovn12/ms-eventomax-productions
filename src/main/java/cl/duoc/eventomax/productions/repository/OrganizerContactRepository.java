@@ -17,6 +17,8 @@ public interface OrganizerContactRepository extends JpaRepository<OrganizerConta
 
     Optional<OrganizerContact> findByOrganizerIdAndActiveTrue(String organizerId);
 
+    java.util.List<OrganizerContact> findByOrganizerIdInAndActiveTrue(java.util.Collection<String> organizerIds);
+
     boolean existsByOrganizerId(String organizerId);
 
     @Query("select c from OrganizerContact c where c.active = true and lower(c.userOid) = lower(:userOid)")
