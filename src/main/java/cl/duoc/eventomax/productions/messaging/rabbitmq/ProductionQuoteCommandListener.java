@@ -1,5 +1,6 @@
 package cl.duoc.eventomax.productions.messaging.rabbitmq;
 
+import cl.duoc.eventomax.productions.dto.OrganizerResolutionSource;
 import cl.duoc.eventomax.productions.event.ProductionStatusChangedEvent;
 import cl.duoc.eventomax.productions.model.OrganizerContact;
 import cl.duoc.eventomax.productions.model.OutboxEvent;
@@ -10,6 +11,7 @@ import cl.duoc.eventomax.productions.repository.OrganizerContactRepository;
 import cl.duoc.eventomax.productions.repository.OutboxEventRepository;
 import cl.duoc.eventomax.productions.repository.ProductionContractedServiceRepository;
 import cl.duoc.eventomax.productions.repository.ProductionRepository;
+import cl.duoc.eventomax.productions.service.OrganizerDisplayNameResolver;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
@@ -68,6 +70,7 @@ public class ProductionQuoteCommandListener {
             Instant occurredAtInstant,
             LocalDateTime dbCreatedAt,
             String actor,
+            String actorDisplayName,
             String eventId
     ) {}
 
@@ -111,12 +114,24 @@ public class ProductionQuoteCommandListener {
     private final OutboxEventRepository outboxEventRepository;
     private final ProductionRepository productionRepository;
     private final ObjectMapper objectMapper;
+    private final OrganizerDisplayNameResolver organizerDisplayNameResolver;
 
     @org.springframework.beans.factory.annotation.Value("${eventomax.messaging.email.default-recipient:}")
     private String defaultRecipientEmail;
 
     public ProductionQuoteCommandListener(RabbitMQCommandPublisher publisher) {
-        this(publisher, null, null, null, null, new ObjectMapper());
+        this(publisher, null, null, null, null, new ObjectMapper(), null);
+    }
+
+    public ProductionQuoteCommandListener(
+            RabbitMQCommandPublisher publisher,
+            ProductionContractedServiceRepository serviceRepository,
+            OrganizerContactRepository contactRepository,
+            OutboxEventRepository outboxEventRepository,
+            ProductionRepository productionRepository,
+            ObjectMapper objectMapper
+    ) {
+        this(publisher, serviceRepository, contactRepository, outboxEventRepository, productionRepository, objectMapper, null);
     }
 
     @Autowired
@@ -126,7 +141,8 @@ public class ProductionQuoteCommandListener {
             OrganizerContactRepository contactRepository,
             OutboxEventRepository outboxEventRepository,
             ProductionRepository productionRepository,
-            @Autowired(required = false) ObjectMapper objectMapper
+            @Autowired(required = false) ObjectMapper objectMapper,
+            @Autowired(required = false) OrganizerDisplayNameResolver organizerDisplayNameResolver
     ) {
         this.publisher = publisher;
         this.serviceRepository = serviceRepository;
@@ -134,6 +150,7 @@ public class ProductionQuoteCommandListener {
         this.outboxEventRepository = outboxEventRepository;
         this.productionRepository = productionRepository;
         this.objectMapper = objectMapper != null ? objectMapper : new ObjectMapper();
+        this.organizerDisplayNameResolver = organizerDisplayNameResolver;
     }
 
     @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
@@ -155,16 +172,45 @@ public class ProductionQuoteCommandListener {
                     ? event.occurredAt().atOffset(ZoneOffset.UTC).format(DateTimeFormatter.ISO_INSTANT)
                     : Instant.now().atOffset(ZoneOffset.UTC).format(DateTimeFormatter.ISO_INSTANT);
 
-            // 2. Fecha de Creación (createdAt)
+            // 2. Datos de Producción (createdAt, crewId y crewName)
             String createdAt = null;
+            String crewId = null;
+            String crewName = null;
             if (productionRepository != null && productionId != null) {
                 try {
                     Optional<Production> prodOpt = productionRepository.findById(productionId);
-                    if (prodOpt.isPresent() && prodOpt.get().getCreatedAt() != null) {
-                        createdAt = prodOpt.get().getCreatedAt().toString();
+                    if (prodOpt.isPresent()) {
+                        Production prod = prodOpt.get();
+                        if (prod.getCreatedAt() != null) {
+                            createdAt = prod.getCreatedAt().toString();
+                        }
+                        crewId = normalizeOptionalText(prod.getCrewId());
+                        crewName = normalizeOptionalText(prod.getCrewName());
                     }
                 } catch (Exception ex) {
-                    log.warn("Fallo en consulta de producción para createdAt (producción {}): {}", productionId, ex.getMessage());
+                    log.warn("Fallo en consulta de producción para metadatos documentales (producción {}): {}", productionId, ex.getClass().getSimpleName());
+                }
+            }
+
+            // 2b. Resolución de identidad del organizador (Entra Graph / Contacto Externo / No resuelto)
+            String organizerDisplayName = null;
+            String organizerResolutionSource = null;
+            if (organizerDisplayNameResolver != null && organizerId != null && !organizerId.isBlank()) {
+                try {
+                    OrganizerDisplayNameResolver.ResolvedOrganizer resolved = organizerDisplayNameResolver.resolveOne(organizerId);
+                    if (resolved != null) {
+                        organizerDisplayName = normalizeOptionalText(resolved.displayName());
+                        organizerResolutionSource = resolved.source() != null
+                                ? resolved.source().name()
+                                : OrganizerResolutionSource.UNRESOLVED.name();
+                    } else {
+                        organizerResolutionSource = OrganizerResolutionSource.UNRESOLVED.name();
+                    }
+                } catch (Exception ex) {
+                    log.warn("Fallo al resolver nombre de organizador para producción {} (degradando a UNRESOLVED): {}",
+                            productionId, ex.getClass().getSimpleName());
+                    organizerDisplayName = null;
+                    organizerResolutionSource = OrganizerResolutionSource.UNRESOLVED.name();
                 }
             }
 
@@ -216,6 +262,7 @@ public class ProductionQuoteCommandListener {
             List<QuoteCommandPayload.TimelineItemPayload> timeline = null;
             String kafkaClosingEventId = null;
             String closingActorOid = null;
+            String closingActorDisplayName = null;
 
             if (outboxEventRepository != null && productionId != null) {
                 try {
@@ -229,6 +276,7 @@ public class ProductionQuoteCommandListener {
                                 if ("CERRADO".equalsIgnoreCase(item.toStatus())) {
                                     kafkaClosingEventId = item.eventId();
                                     closingActorOid = item.actor();
+                                    closingActorDisplayName = item.actorDisplayName();
                                     break;
                                 }
                             }
@@ -257,7 +305,12 @@ public class ProductionQuoteCommandListener {
                     null, // Equipamiento queda null: su dominio propietario es Catalog
                     timeline,
                     kafkaClosingEventId,
-                    closingActorOid
+                    closingActorOid,
+                    organizerDisplayName,
+                    organizerResolutionSource,
+                    closingActorDisplayName,
+                    crewId,
+                    crewName
             );
 
             // 7. Publicación Resiliente a RabbitMQ
@@ -319,6 +372,7 @@ public class ProductionQuoteCommandListener {
                 String type = root.path("type").asText(null);
                 String occurredAt = root.path("timestamp").asText(null);
                 String actor = root.path("actor").asText(null);
+                String actorDisplayName = normalizeOptionalText(root.path("actorDisplayName").asText(null));
                 JsonNode payloadNode = root.path("payload");
 
                 String fromStatus = null;
@@ -350,6 +404,7 @@ public class ProductionQuoteCommandListener {
                             occurredAtInstant,
                             dbCreatedAt,
                             actor,
+                            actorDisplayName,
                             eventId
                     ));
                 }
@@ -370,10 +425,19 @@ public class ProductionQuoteCommandListener {
                     it.toStatus(),
                     it.occurredAtStr(),
                     it.actor(),
-                    it.eventId()
+                    it.eventId(),
+                    it.actorDisplayName()
             ));
         }
         return List.copyOf(result);
+    }
+
+    private static String normalizeOptionalText(String value) {
+        if (value == null) {
+            return null;
+        }
+        String trimmed = value.trim();
+        return trimmed.isEmpty() ? null : trimmed;
     }
 
     public static Instant parseInstantSafe(String dateStr) {
