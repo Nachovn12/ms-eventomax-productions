@@ -54,6 +54,7 @@ public class ProductionService {
     private final ProductionContractedServiceRepository contractedServiceRepository;
     private final ProductionQuoteCommandListener quoteCommandListener;
     private final OrganizerContactService organizerContactService;
+    private final OrganizerDisplayNameResolver organizerDisplayNameResolver;
     private final ObjectMapper objectMapper;
 
     public ProductionService(
@@ -65,7 +66,7 @@ public class ProductionService {
             InventoryReservationTaskService taskService,
             ProductionStateCoordinator stateCoordinator) {
         this(repository, eventPublisher, catalogClient, outboxEventRepository,
-                inventoryReservationTaskRepository, taskService, stateCoordinator, null, null, null);
+                inventoryReservationTaskRepository, taskService, stateCoordinator, null, null, null, null);
     }
 
     public ProductionService(
@@ -80,7 +81,23 @@ public class ProductionService {
             ProductionQuoteCommandListener quoteCommandListener) {
         this(repository, eventPublisher, catalogClient, outboxEventRepository,
                 inventoryReservationTaskRepository, taskService, stateCoordinator,
-                contractedServiceRepository, quoteCommandListener, null);
+                contractedServiceRepository, quoteCommandListener, null, null);
+    }
+
+    public ProductionService(
+            ProductionRepository repository,
+            ApplicationEventPublisher eventPublisher,
+            CatalogClient catalogClient,
+            OutboxEventRepository outboxEventRepository,
+            InventoryReservationTaskRepository inventoryReservationTaskRepository,
+            InventoryReservationTaskService taskService,
+            ProductionStateCoordinator stateCoordinator,
+            ProductionContractedServiceRepository contractedServiceRepository,
+            ProductionQuoteCommandListener quoteCommandListener,
+            OrganizerContactService organizerContactService) {
+        this(repository, eventPublisher, catalogClient, outboxEventRepository,
+                inventoryReservationTaskRepository, taskService, stateCoordinator,
+                contractedServiceRepository, quoteCommandListener, organizerContactService, null);
     }
 
     @Autowired
@@ -94,7 +111,8 @@ public class ProductionService {
             ProductionStateCoordinator stateCoordinator,
             @Autowired(required = false) ProductionContractedServiceRepository contractedServiceRepository,
             @Autowired(required = false) ProductionQuoteCommandListener quoteCommandListener,
-            @Autowired(required = false) OrganizerContactService organizerContactService) {
+            @Autowired(required = false) OrganizerContactService organizerContactService,
+            @Autowired(required = false) OrganizerDisplayNameResolver organizerDisplayNameResolver) {
         this.repository = repository;
         this.eventPublisher = eventPublisher;
         this.catalogClient = catalogClient;
@@ -105,6 +123,7 @@ public class ProductionService {
         this.contractedServiceRepository = contractedServiceRepository;
         this.quoteCommandListener = quoteCommandListener;
         this.organizerContactService = organizerContactService;
+        this.organizerDisplayNameResolver = organizerDisplayNameResolver;
         this.objectMapper = new ObjectMapper()
                 .registerModule(new JavaTimeModule())
                 .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
@@ -276,18 +295,12 @@ public class ProductionService {
 
     @Transactional(readOnly = true)
     public List<ProductionResponseDTO> getAllProductions() {
-        return repository.findAll()
-                .stream()
-                .map(this::toResponseDTO)
-                .toList();
+        return toResponseDTOs(repository.findAll());
     }
 
     @Transactional(readOnly = true)
     public List<ProductionResponseDTO> getAllProductionsForOwner(String ownerId) {
-        return repository.findByOrganizerId(ownerId)
-                .stream()
-                .map(this::toResponseDTO)
-                .toList();
+        return toResponseDTOs(repository.findByOrganizerId(ownerId));
     }
 
     @Transactional(readOnly = true)
@@ -313,10 +326,7 @@ public class ProductionService {
             }
         }
 
-        return repository.findByFilters(status, from, to, ownerId)
-                .stream()
-                .map(this::toResponseDTO)
-                .toList();
+        return toResponseDTOs(repository.findByFilters(status, from, to, ownerId));
     }
 
     @Transactional(readOnly = true)
@@ -324,10 +334,7 @@ public class ProductionService {
         if (organizerIds == null || organizerIds.isEmpty()) {
             return List.of();
         }
-        return repository.findByOrganizerIdIn(organizerIds)
-                .stream()
-                .map(this::toResponseDTO)
-                .toList();
+        return toResponseDTOs(repository.findByOrganizerIdIn(organizerIds));
     }
 
     @Transactional(readOnly = true)
@@ -347,10 +354,7 @@ public class ProductionService {
             }
         }
 
-        return repository.findByFilters(status, from, to, organizerIds)
-                .stream()
-                .map(this::toResponseDTO)
-                .toList();
+        return toResponseDTOs(repository.findByFilters(status, from, to, organizerIds));
     }
 
     public ProductionResponseDTO updateStatus(Long id, ProductionStatusUpdateDTO request, String actor) {
@@ -582,7 +586,38 @@ public class ProductionService {
     // Mapper
     // -------------------------------------------------------------------------
 
+    private List<ProductionResponseDTO> toResponseDTOs(List<Production> productions) {
+        if (productions == null || productions.isEmpty()) {
+            return List.of();
+        }
+        if (organizerDisplayNameResolver == null) {
+            return productions.stream().map(p -> mapToResponseDTO(p, null)).toList();
+        }
+        List<String> organizerIds = productions.stream()
+                .map(Production::getOrganizerId)
+                .toList();
+        java.util.Map<String, OrganizerDisplayNameResolver.ResolvedOrganizer> resolvedMap =
+                organizerDisplayNameResolver.resolveAll(organizerIds);
+        return productions.stream()
+                .map(p -> {
+                    String key = p.getOrganizerId() != null ? p.getOrganizerId().trim() : "";
+                    OrganizerDisplayNameResolver.ResolvedOrganizer resolved =
+                            resolvedMap.getOrDefault(key, OrganizerDisplayNameResolver.ResolvedOrganizer.UNRESOLVED);
+                    return mapToResponseDTO(p, resolved);
+                })
+                .toList();
+    }
+
     private ProductionResponseDTO toResponseDTO(Production production) {
+        OrganizerDisplayNameResolver.ResolvedOrganizer resolved = (organizerDisplayNameResolver != null)
+                ? organizerDisplayNameResolver.resolveOne(production.getOrganizerId())
+                : null;
+        return mapToResponseDTO(production, resolved);
+    }
+
+    private ProductionResponseDTO mapToResponseDTO(
+            Production production,
+            OrganizerDisplayNameResolver.ResolvedOrganizer resolved) {
         return new ProductionResponseDTO(
                 production.getId(),
                 production.getOrganizerId(),
@@ -593,7 +628,9 @@ public class ProductionService {
                 production.getCreatedAt(),
                 production.getUpdatedAt(),
                 production.getCrewId(),
-                production.getCrewName()
+                production.getCrewName(),
+                resolved != null ? resolved.displayName() : null,
+                resolved != null ? resolved.source() : null
         );
     }
 }

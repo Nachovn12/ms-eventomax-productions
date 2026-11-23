@@ -23,13 +23,17 @@ import org.springframework.web.client.RestClient;
 
 import java.net.URI;
 import java.net.http.HttpClient;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
@@ -46,18 +50,23 @@ import java.util.concurrent.atomic.AtomicReference;
  *   {@link ExternalDirectoryUnavailableException} si Graph está desactivado o no responde; nunca autoriza desde caché obsoleta.
  */
 @Component
-public class MicrosoftGraphEligibleOrganizerProvider implements EligibleOrganizerProvider {
+public class MicrosoftGraphEligibleOrganizerProvider implements EligibleOrganizerProvider, EntraUserDisplayNameClient {
 
     private static final Logger log = LoggerFactory.getLogger(MicrosoftGraphEligibleOrganizerProvider.class);
     private static final long MAX_RETRY_AFTER_MS = 2_000L;
+    private static final int MAX_BATCH_SIZE = 20;
+    private static final int MAX_USER_CACHE_ENTRIES = 1_000;
+    private static final Duration NEGATIVE_CACHE_TTL = Duration.ofMinutes(2);
 
     private record CachedToken(String accessToken, Instant expiresAt) {}
     private record CachedDirectory(List<EligibleOrganizerCandidate> candidates, Instant expiresAt) {}
+    private record CachedUserDisplayName(Optional<String> displayName, Instant expiresAt) {}
 
     private final MicrosoftGraphProperties properties;
     private final RestClient restClient;
     private final AtomicReference<CachedToken> tokenCache = new AtomicReference<>();
     private final AtomicReference<CachedDirectory> directoryCache = new AtomicReference<>();
+    private final ConcurrentHashMap<String, CachedUserDisplayName> userDisplayNameCache = new ConcurrentHashMap<>();
 
     @Autowired
     public MicrosoftGraphEligibleOrganizerProvider(MicrosoftGraphProperties properties) {
@@ -152,6 +161,215 @@ public class MicrosoftGraphEligibleOrganizerProvider implements EligibleOrganize
     public void clearCache() {
         directoryCache.set(null);
         tokenCache.set(null);
+        userDisplayNameCache.clear();
+    }
+
+    @Override
+    public boolean isUserLookupReady() {
+        return properties.isEnabled() && properties.isUserLookupConfigured();
+    }
+
+    @Override
+    public String getConfiguredTenantId() {
+        return properties.getTenantId() != null ? properties.getTenantId().trim().toLowerCase(Locale.ROOT) : "";
+    }
+
+    @Override
+    public Map<String, Optional<String>> lookupUserDisplayNames(Set<String> normalizedObjectIds) {
+        Map<String, Optional<String>> results = new LinkedHashMap<>();
+        if (normalizedObjectIds == null || normalizedObjectIds.isEmpty()) {
+            return results;
+        }
+        if (!isUserLookupReady()) {
+            for (String oid : normalizedObjectIds) {
+                results.put(oid, Optional.empty());
+            }
+            return results;
+        }
+
+        Instant now = Instant.now();
+        List<String> uncached = new ArrayList<>();
+        for (String rawOid : normalizedObjectIds) {
+            if (rawOid == null || rawOid.isBlank()) {
+                continue;
+            }
+            String oid = rawOid.trim().toLowerCase(Locale.ROOT);
+            CachedUserDisplayName cached = userDisplayNameCache.get(oid);
+            if (cached != null && now.isBefore(cached.expiresAt())) {
+                results.put(oid, cached.displayName());
+            } else {
+                if (cached != null) {
+                    userDisplayNameCache.remove(oid, cached);
+                }
+                uncached.add(oid);
+            }
+        }
+
+        if (uncached.isEmpty()) {
+            return results;
+        }
+
+        String token;
+        try {
+            token = acquireAccessToken();
+        } catch (Exception ex) {
+            log.warn("[GRAPH_USER_LOOKUP_TOKEN_FAILED] No se pudo obtener token para consultar nombres de organizadores: {}",
+                    ex.getClass().getSimpleName());
+            for (String oid : uncached) {
+                results.put(oid, Optional.empty());
+            }
+            return results;
+        }
+
+        if (uncached.size() == 1) {
+            String oid = uncached.get(0);
+            results.put(oid, fetchSingleUserDisplayName(token, oid));
+            return results;
+        }
+
+        for (int start = 0; start < uncached.size(); start += MAX_BATCH_SIZE) {
+            List<String> chunk = uncached.subList(start, Math.min(start + MAX_BATCH_SIZE, uncached.size()));
+            Map<String, Optional<String>> batchResults = fetchBatchUserDisplayNames(token, chunk);
+            results.putAll(batchResults);
+        }
+        return results;
+    }
+
+    private Optional<String> fetchSingleUserDisplayName(String token, String oid) {
+        String baseUrl = trimTrailingSlash(properties.getGraphBaseUrl());
+        URI uri = URI.create(baseUrl + "/users/" + oid + "?$select=id,displayName,accountEnabled");
+        try {
+            JsonNode user = executeGraphGetWithRetry(uri, token);
+            if (user == null) {
+                putUserDisplayNameCache(oid, Optional.empty(), NEGATIVE_CACHE_TTL);
+                return Optional.empty();
+            }
+            Optional<String> resolved = extractEnabledDisplayName(user);
+            putUserDisplayNameCache(oid, resolved, resolved.isPresent() ? properties.getCacheTtl() : NEGATIVE_CACHE_TTL);
+            return resolved;
+        } catch (Exception ex) {
+            log.warn("[GRAPH_USER_LOOKUP_DEGRADED] Fallo al consultar organizador en Microsoft Graph: {}",
+                    ex.getClass().getSimpleName());
+            return Optional.empty();
+        }
+    }
+
+    private Map<String, Optional<String>> fetchBatchUserDisplayNames(String token, List<String> oids) {
+        Map<String, Optional<String>> resolvedMap = new LinkedHashMap<>();
+        for (String oid : oids) {
+            resolvedMap.put(oid, Optional.empty());
+        }
+
+        String baseUrl = trimTrailingSlash(properties.getGraphBaseUrl());
+        URI batchUri = URI.create(baseUrl + "/$batch");
+
+        List<Map<String, String>> requests = new ArrayList<>(oids.size());
+        Map<String, String> idToOid = new LinkedHashMap<>(oids.size());
+        for (int i = 0; i < oids.size(); i++) {
+            String reqId = String.valueOf(i);
+            String oid = oids.get(i);
+            idToOid.put(reqId, oid);
+            requests.add(Map.of(
+                    "id", reqId,
+                    "method", "GET",
+                    "url", "/users/" + oid + "?$select=id,displayName,accountEnabled"
+            ));
+        }
+
+        try {
+            JsonNode batchResponse = executeGraphPostWithRetry(batchUri, token, Map.of("requests", requests));
+            if (batchResponse == null || !batchResponse.path("responses").isArray()) {
+                return resolvedMap;
+            }
+            for (JsonNode sub : batchResponse.path("responses")) {
+                String reqId = sub.path("id").asText("");
+                String oid = idToOid.get(reqId);
+                if (oid == null) {
+                    continue;
+                }
+                int status = sub.path("status").asInt(0);
+                if (status == 200) {
+                    Optional<String> displayName = extractEnabledDisplayName(sub.path("body"));
+                    putUserDisplayNameCache(oid, displayName, displayName.isPresent() ? properties.getCacheTtl() : NEGATIVE_CACHE_TTL);
+                    resolvedMap.put(oid, displayName);
+                } else if (status == 404) {
+                    putUserDisplayNameCache(oid, Optional.empty(), NEGATIVE_CACHE_TTL);
+                    resolvedMap.put(oid, Optional.empty());
+                } else if (status == 401 || status == 403) {
+                    tokenCache.set(null);
+                    log.warn("[GRAPH_BATCH_SUB_AUTH] Sub-consulta Microsoft Graph respondió HTTP {}", status);
+                    resolvedMap.put(oid, Optional.empty());
+                } else {
+                    log.warn("[GRAPH_BATCH_SUB_ERROR] Sub-consulta Microsoft Graph respondió HTTP {}", status);
+                    resolvedMap.put(oid, Optional.empty());
+                }
+            }
+        } catch (Exception ex) {
+            log.warn("[GRAPH_BATCH_LOOKUP_DEGRADED] Fallo en consulta por lote Microsoft Graph: {}",
+                    ex.getClass().getSimpleName());
+        }
+        return resolvedMap;
+    }
+
+    private Optional<String> extractEnabledDisplayName(JsonNode user) {
+        if (user == null || user.isNull() || user.isMissingNode()) {
+            return Optional.empty();
+        }
+        boolean accountEnabled = user.path("accountEnabled").asBoolean(false);
+        if (!accountEnabled) {
+            return Optional.empty();
+        }
+        String displayName = user.path("displayName").asText("").trim();
+        if (displayName.isBlank()) {
+            return Optional.empty();
+        }
+        return Optional.of(displayName.length() > 150 ? displayName.substring(0, 150) : displayName);
+    }
+
+    private void putUserDisplayNameCache(String oid, Optional<String> displayName, Duration ttl) {
+        if (userDisplayNameCache.size() >= MAX_USER_CACHE_ENTRIES) {
+            Instant now = Instant.now();
+            userDisplayNameCache.entrySet().removeIf(entry -> !now.isBefore(entry.getValue().expiresAt()));
+            if (userDisplayNameCache.size() >= MAX_USER_CACHE_ENTRIES) {
+                userDisplayNameCache.clear();
+            }
+        }
+        Duration effectiveTtl = (ttl != null && !ttl.isNegative() && !ttl.isZero()) ? ttl : Duration.ofMinutes(5);
+        userDisplayNameCache.put(oid, new CachedUserDisplayName(displayName, Instant.now().plus(effectiveTtl)));
+    }
+
+    private JsonNode executeGraphPostWithRetry(URI uri, String token, Object body) {
+        for (int attempt = 0; attempt < 2; attempt++) {
+            try {
+                return restClient.post()
+                        .uri(uri)
+                        .header(HttpHeaders.AUTHORIZATION, "Bearer " + token)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .accept(MediaType.APPLICATION_JSON)
+                        .body(body)
+                        .retrieve()
+                        .onStatus(status -> status.is3xxRedirection(), (req, resp) -> {
+                            throw new ExternalDirectoryUnavailableException(
+                                    "Redirección HTTP bloqueada hacia Microsoft Graph (HTTP " + resp.getStatusCode().value() + ").");
+                        })
+                        .body(JsonNode.class);
+            } catch (HttpClientErrorException ex) {
+                int status = ex.getStatusCode().value();
+                if (status == 429 && attempt == 0) {
+                    long delayMs = resolveRetryAfterMs(ex.getResponseHeaders());
+                    sleepQuietly(delayMs);
+                    continue;
+                }
+                if (status == 401 || status == 403) {
+                    tokenCache.set(null);
+                }
+                throw new ExternalDirectoryUnavailableException("Microsoft Graph respondió HTTP " + status, ex);
+            } catch (HttpServerErrorException ex) {
+                throw new ExternalDirectoryUnavailableException(
+                        "Microsoft Graph respondió error temporal HTTP " + ex.getStatusCode().value(), ex);
+            }
+        }
+        throw new ExternalDirectoryUnavailableException("Microsoft Graph excedió el límite de reintentos (HTTP 429).");
     }
 
     private List<EligibleOrganizerCandidate> fetchLiveEligibleOrganizers() {
