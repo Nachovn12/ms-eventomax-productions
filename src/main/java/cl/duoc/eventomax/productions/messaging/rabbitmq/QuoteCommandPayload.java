@@ -31,7 +31,14 @@ public record QuoteCommandPayload(
         List<EquipmentReservationPayload> equipment,
         List<TimelineItemPayload> timeline,
         String kafkaClosingEventId,
-        String closingActorOid
+        String closingActorOid,
+
+        // Campos Opcionales Aditivos (Identidades Verificadas y Cuadrilla — Diseño C)
+        String organizerDisplayName,
+        String organizerResolutionSource,
+        String closingActorDisplayName,
+        String crewId,
+        String crewName
 ) {
 
     /**
@@ -58,6 +65,57 @@ public record QuoteCommandPayload(
                 null,
                 null,
                 null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null,
+                null
+        );
+    }
+
+    /**
+     * Constructor de compatibilidad para contratos previos de 16 campos.
+     */
+    public QuoteCommandPayload(
+            Long productionId,
+            String organizerId,
+            String productionName,
+            String status,
+            String scheduledAt,
+            String location,
+            String closedAt,
+            String createdAt,
+            String organizerContactMaskedEmail,
+            String organizerContactName,
+            String organizerContactPhone,
+            List<ContractedServicePayload> services,
+            List<EquipmentReservationPayload> equipment,
+            List<TimelineItemPayload> timeline,
+            String kafkaClosingEventId,
+            String closingActorOid
+    ) {
+        this(
+                productionId,
+                organizerId,
+                productionName,
+                status,
+                scheduledAt,
+                location,
+                closedAt,
+                createdAt,
+                organizerContactMaskedEmail,
+                organizerContactName,
+                organizerContactPhone,
+                services,
+                equipment,
+                timeline,
+                kafkaClosingEventId,
+                closingActorOid,
                 null,
                 null,
                 null,
@@ -89,6 +147,21 @@ public record QuoteCommandPayload(
             String toStatus,
             String occurredAt,
             String actor,
-            String eventId
-    ) {}
+            String eventId,
+            String actorDisplayName
+    ) {
+        /**
+         * Constructor de compatibilidad para eventos de bitácora de 6 campos.
+         */
+        public TimelineItemPayload(
+                Integer sequenceIndex,
+                String fromStatus,
+                String toStatus,
+                String occurredAt,
+                String actor,
+                String eventId
+        ) {
+            this(sequenceIndex, fromStatus, toStatus, occurredAt, actor, eventId, null);
+        }
+    }
 }

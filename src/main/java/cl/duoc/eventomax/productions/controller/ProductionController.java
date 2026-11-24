@@ -1,9 +1,14 @@
 package cl.duoc.eventomax.productions.controller;
 
 import cl.duoc.eventomax.productions.dto.ContractedServiceDto;
+import cl.duoc.eventomax.productions.dto.ExternalOrganizerType;
+import cl.duoc.eventomax.productions.dto.OrganizerMode;
 import cl.duoc.eventomax.productions.dto.ProductionRequestDTO;
 import cl.duoc.eventomax.productions.dto.ProductionResponseDTO;
 import cl.duoc.eventomax.productions.dto.ProductionStatusUpdateDTO;
+import cl.duoc.eventomax.productions.service.ContactConflictException;
+import cl.duoc.eventomax.productions.service.EligibleOrganizerCandidate;
+import cl.duoc.eventomax.productions.service.EligibleOrganizerService;
 import cl.duoc.eventomax.productions.service.ProductionService;
 import cl.duoc.eventomax.productions.service.ResourceNotFoundException;
 
@@ -32,11 +37,20 @@ public class ProductionController {
 
     private final ProductionService service;
     private final cl.duoc.eventomax.productions.service.OrganizerContactService organizerContactService;
+    private final EligibleOrganizerService eligibleOrganizerService;
 
     public ProductionController(ProductionService service,
                                 cl.duoc.eventomax.productions.service.OrganizerContactService organizerContactService) {
+        this(service, organizerContactService, null);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public ProductionController(ProductionService service,
+                                cl.duoc.eventomax.productions.service.OrganizerContactService organizerContactService,
+                                @org.springframework.beans.factory.annotation.Autowired(required = false) EligibleOrganizerService eligibleOrganizerService) {
         this.service = service;
         this.organizerContactService = organizerContactService;
+        this.eligibleOrganizerService = eligibleOrganizerService;
     }
 
 
@@ -54,7 +68,47 @@ public class ProductionController {
             throw new org.springframework.security.access.AccessDeniedException("Identidad requerida");
         }
         String actor = cl.duoc.eventomax.productions.security.SecurityUtils.resolveOwnerId(jwt);
+        String actorDisplayName = cl.duoc.eventomax.productions.security.SecurityUtils.resolveDisplayName(jwt);
         boolean organizerOnly = cl.duoc.eventomax.productions.security.SecurityUtils.isOrganizerOnly(authentication, jwt);
+        OrganizerMode mode = request.organizerMode();
+
+        if (mode == OrganizerMode.SELF) {
+            if (hasAnyExternalFields(request)) {
+                throw new IllegalArgumentException(
+                        "No se permiten campos de cliente externo cuando organizerMode=SELF");
+            }
+            String canonicalOwnerId = cl.duoc.eventomax.productions.security.SecurityUtils.requireOrganizerOwnerId(jwt);
+            if (request.organizerId() != null && !request.organizerId().isBlank()
+                    && !canonicalOwnerId.equalsIgnoreCase(request.organizerId().trim())) {
+                throw new IllegalArgumentException(
+                        "En modo SELF el identificador de organizador no puede diferir de la identidad autenticada");
+            }
+            ProductionRequestDTO selfRequest = new ProductionRequestDTO(
+                    canonicalOwnerId,
+                    request.name(),
+                    request.scheduledAt(),
+                    request.location(),
+                    request.crewId(),
+                    request.crewName(),
+                    OrganizerMode.SELF
+            );
+            ProductionResponseDTO response = service.createProduction(selfRequest, canonicalOwnerId, jwt);
+            return ResponseEntity.status(HttpStatus.CREATED).body(response);
+        }
+
+        if (mode == OrganizerMode.EXTERNAL) {
+            if (organizerOnly) {
+                throw new org.springframework.security.access.AccessDeniedException(
+                        "Organizador no puede crear producciones en modo EXTERNAL");
+            }
+            return handleExternalCreation(request, actor, actorDisplayName);
+        }
+
+        // Ruta legacy (organizerMode == null): rechazar campos exclusivos del contrato EXTERNAL
+        if (hasAnyExternalFields(request)) {
+            throw new IllegalArgumentException(
+                    "Los campos de cliente externo requieren especificar organizerMode=EXTERNAL");
+        }
 
         ProductionRequestDTO effectiveRequest = request;
         if (organizerOnly) {
@@ -66,19 +120,210 @@ public class ProductionController {
                     throw new org.springframework.security.access.AccessDeniedException(
                             "No esta autorizado para crear producciones en nombre de este organizador");
                 }
+                // Normalize only the canonical identity already verified against this caller's JWT.
+                // Business aliases retain their original identifier and ownership rules.
+                if (cl.duoc.eventomax.productions.security.SecurityUtils.isCanonicalOwnerId(targetOrganizerId)) {
+                    targetOrganizerId = cl.duoc.eventomax.productions.security.SecurityUtils.requireOrganizerOwnerId(jwt);
+                }
             } else {
                 targetOrganizerId = organizerContactService.resolveAuthorizedOrganizerIds(jwt).stream()
                         .findFirst()
                         .orElse(actor);
             }
-            effectiveRequest = new ProductionRequestDTO(targetOrganizerId, request.name(), request.scheduledAt(), request.location());
+            effectiveRequest = new ProductionRequestDTO(
+                    targetOrganizerId,
+                    request.name(),
+                    request.scheduledAt(),
+                    request.location(),
+                    request.crewId(),
+                    request.crewName(),
+                    mode
+            );
+        } else {
+            // Protección anti-bypass para Productor en ruta legacy:
+            // Si organizerId es una identidad canónica Entra (tid:oid) distinta a la del llamador,
+            // exige verificación server-side de elegibilidad y cuenta habilitada (fail-closed).
+            String legacyOrgId = (request.organizerId() != null) ? request.organizerId().trim() : "";
+            if (cl.duoc.eventomax.productions.security.SecurityUtils.isCanonicalOwnerId(legacyOrgId)) {
+                String callerOwnerId = cl.duoc.eventomax.productions.security.SecurityUtils.requireOrganizerOwnerId(jwt);
+                if (callerOwnerId.equalsIgnoreCase(legacyOrgId)) {
+                    effectiveRequest = new ProductionRequestDTO(
+                            callerOwnerId,
+                            request.name(),
+                            request.scheduledAt(),
+                            request.location(),
+                            request.crewId(),
+                            request.crewName(),
+                            null
+                    );
+                } else {
+                    if (eligibleOrganizerService == null) {
+                        throw new cl.duoc.eventomax.productions.service.ExternalDirectoryUnavailableException(
+                                "Servicio de verificación de organizadores Entra ID no disponible.");
+                    }
+                    EligibleOrganizerCandidate verified = eligibleOrganizerService.requireVerifiedEntraOrganizer(legacyOrgId);
+                    effectiveRequest = new ProductionRequestDTO(
+                            verified.organizerId(),
+                            request.name(),
+                            request.scheduledAt(),
+                            request.location(),
+                            request.crewId(),
+                            request.crewName(),
+                            null
+                    );
+                }
+            }
         }
 
-        ProductionResponseDTO response = service.createProduction(effectiveRequest, actor);
+        ProductionResponseDTO response = (actorDisplayName != null)
+                ? service.createProduction(effectiveRequest, actor, actorDisplayName)
+                : service.createProduction(effectiveRequest, actor);
 
         return ResponseEntity
                 .status(HttpStatus.CREATED)
                 .body(response);
+    }
+
+    private static boolean hasAnyExternalFields(ProductionRequestDTO request) {
+        return request.externalOrganizerType() != null
+                || (request.externalClientName() != null && !request.externalClientName().isBlank())
+                || (request.externalClientEmail() != null && !request.externalClientEmail().isBlank());
+    }
+
+    private ResponseEntity<ProductionResponseDTO> handleExternalCreation(
+            ProductionRequestDTO request, String actor, String actorDisplayName) {
+        ExternalOrganizerType extType = request.externalOrganizerType();
+        boolean hasEmailInput = request.externalClientEmail() != null && !request.externalClientEmail().isBlank();
+        boolean hasNameInput = request.externalClientName() != null && !request.externalClientName().isBlank();
+
+        // Caso C: Nuevo cliente externo con identificador opaco generado por el backend (ext-<uuid>)
+        if (extType == ExternalOrganizerType.NEW_EXTERNAL) {
+            if (request.organizerId() != null && !request.organizerId().isBlank()) {
+                throw new IllegalArgumentException(
+                        "No se permite asignar manualmente un organizerId al registrar un nuevo cliente externo.");
+            }
+            if (!hasNameInput) {
+                throw new IllegalArgumentException("El nombre del cliente externo es obligatorio.");
+            }
+            if (!hasEmailInput || !cl.duoc.eventomax.productions.security.SecurityUtils.isDeliverableEmail(request.externalClientEmail())) {
+                throw new IllegalArgumentException("Se requiere un correo electrónico válido para registrar un nuevo cliente externo.");
+            }
+            String generatedOrganizerId = "ext-" + java.util.UUID.randomUUID();
+            ProductionRequestDTO effective = new ProductionRequestDTO(
+                    generatedOrganizerId,
+                    request.name(),
+                    request.scheduledAt(),
+                    request.location(),
+                    request.crewId(),
+                    request.crewName(),
+                    OrganizerMode.EXTERNAL,
+                    ExternalOrganizerType.NEW_EXTERNAL,
+                    request.externalClientName().trim(),
+                    request.externalClientEmail().trim()
+            );
+            var provision = new ProductionService.ContactProvisionRequest(
+                    generatedOrganizerId,
+                    request.externalClientEmail().trim(),
+                    request.externalClientName().trim(),
+                    null
+            );
+            ProductionResponseDTO created = (actorDisplayName != null)
+                    ? service.createProductionWithContact(effective, actor, actorDisplayName, provision)
+                    : service.createProductionWithContact(effective, actor, provision);
+            return ResponseEntity.status(HttpStatus.CREATED).body(created);
+        }
+
+        String targetOrganizerId = (request.organizerId() != null) ? request.organizerId().trim() : "";
+        if (targetOrganizerId.isBlank()) {
+            throw new IllegalArgumentException("El organizador es obligatorio en modo EXTERNAL.");
+        }
+
+        // Caso A: Organizador Entra ID (explícito o identificado por formato canónico tid:oid)
+        if (extType == ExternalOrganizerType.ENTRA_ORGANIZER
+                || (extType == null && cl.duoc.eventomax.productions.security.SecurityUtils.isCanonicalOwnerId(targetOrganizerId))) {
+            if (hasEmailInput) {
+                throw new ContactConflictException(
+                        "No se permite proporcionar o sobrescribir un correo manual para un organizador de Microsoft Entra ID.");
+            }
+            if (hasNameInput) {
+                throw new IllegalArgumentException(
+                        "El campo externalClientName solo se permite cuando externalOrganizerType=NEW_EXTERNAL.");
+            }
+            if (eligibleOrganizerService == null) {
+                throw new cl.duoc.eventomax.productions.service.ExternalDirectoryUnavailableException(
+                        "Servicio de verificación de organizadores Entra ID no disponible.");
+            }
+            EligibleOrganizerCandidate verified = eligibleOrganizerService.requireVerifiedEntraOrganizer(targetOrganizerId);
+            ProductionRequestDTO effective = new ProductionRequestDTO(
+                    verified.organizerId(),
+                    request.name(),
+                    request.scheduledAt(),
+                    request.location(),
+                    request.crewId(),
+                    request.crewName(),
+                    OrganizerMode.EXTERNAL,
+                    ExternalOrganizerType.ENTRA_ORGANIZER,
+                    null,
+                    null
+            );
+            ProductionService.ContactProvisionRequest provision = (verified.deliverableEmail() != null)
+                    ? new ProductionService.ContactProvisionRequest(
+                            verified.organizerId(),
+                            verified.deliverableEmail(),
+                            verified.displayName(),
+                            verified.userOid())
+                    : null;
+            ProductionResponseDTO created = (actorDisplayName != null)
+                    ? service.createProductionWithContact(effective, actor, actorDisplayName, provision)
+                    : service.createProductionWithContact(effective, actor, provision);
+            return ResponseEntity.status(HttpStatus.CREATED).body(created);
+        }
+
+        // Caso B: Cliente externo existente (explícito)
+        if (extType == ExternalOrganizerType.EXISTING_EXTERNAL) {
+            if (cl.duoc.eventomax.productions.security.SecurityUtils.isCanonicalOwnerId(targetOrganizerId)) {
+                throw new org.springframework.security.access.AccessDeniedException(
+                        "No se permite tratar una identidad canónica de Entra ID como cliente externo.");
+            }
+            if (hasEmailInput) {
+                throw new ContactConflictException(
+                        "No se permite modificar el correo de un cliente externo existente desde la creación de producción.");
+            }
+            if (hasNameInput) {
+                throw new IllegalArgumentException(
+                        "El campo externalClientName solo se permite cuando externalOrganizerType=NEW_EXTERNAL.");
+            }
+            if (eligibleOrganizerService == null) {
+                throw new ResourceNotFoundException("Cliente externo no encontrado: " + targetOrganizerId);
+            }
+            EligibleOrganizerCandidate existing = eligibleOrganizerService.requireExistingExternalOrganizer(targetOrganizerId);
+            ProductionRequestDTO effective = new ProductionRequestDTO(
+                    existing.organizerId(),
+                    request.name(),
+                    request.scheduledAt(),
+                    request.location(),
+                    request.crewId(),
+                    request.crewName(),
+                    OrganizerMode.EXTERNAL,
+                    ExternalOrganizerType.EXISTING_EXTERNAL,
+                    null,
+                    null
+            );
+            ProductionResponseDTO created = (actorDisplayName != null)
+                    ? service.createProduction(effective, actor, actorDisplayName)
+                    : service.createProduction(effective, actor);
+            return ResponseEntity.status(HttpStatus.CREATED).body(created);
+        }
+
+        // Compatibilidad legacy (EXTERNAL sin externalOrganizerType): preserva flujo histórico sin sobrescribir contactos
+        if (hasEmailInput) {
+            throw new ContactConflictException(
+                    "Para registrar un cliente nuevo con correo utilice externalOrganizerType=NEW_EXTERNAL.");
+        }
+        ProductionResponseDTO created = (actorDisplayName != null)
+                ? service.createProduction(request, actor, actorDisplayName)
+                : service.createProduction(request, actor);
+        return ResponseEntity.status(HttpStatus.CREATED).body(created);
     }
 
 
@@ -187,8 +432,11 @@ public class ProductionController {
             }
         }
 
-        String actor = jwt.getSubject();
-        ProductionResponseDTO updated = service.updateStatus(id, request, actor);
+        String actor = cl.duoc.eventomax.productions.security.SecurityUtils.resolveOwnerId(jwt);
+        String actorDisplayName = cl.duoc.eventomax.productions.security.SecurityUtils.resolveDisplayName(jwt);
+        ProductionResponseDTO updated = (actorDisplayName != null)
+                ? service.updateStatus(id, request, actor, actorDisplayName)
+                : service.updateStatus(id, request, actor);
         return ResponseEntity.ok(updated);
 
     }

@@ -53,6 +53,8 @@ public class ProductionService {
     private final ProductionStateCoordinator stateCoordinator;
     private final ProductionContractedServiceRepository contractedServiceRepository;
     private final ProductionQuoteCommandListener quoteCommandListener;
+    private final OrganizerContactService organizerContactService;
+    private final OrganizerDisplayNameResolver organizerDisplayNameResolver;
     private final ObjectMapper objectMapper;
 
     public ProductionService(
@@ -64,7 +66,38 @@ public class ProductionService {
             InventoryReservationTaskService taskService,
             ProductionStateCoordinator stateCoordinator) {
         this(repository, eventPublisher, catalogClient, outboxEventRepository,
-                inventoryReservationTaskRepository, taskService, stateCoordinator, null, null);
+                inventoryReservationTaskRepository, taskService, stateCoordinator, null, null, null, null);
+    }
+
+    public ProductionService(
+            ProductionRepository repository,
+            ApplicationEventPublisher eventPublisher,
+            CatalogClient catalogClient,
+            OutboxEventRepository outboxEventRepository,
+            InventoryReservationTaskRepository inventoryReservationTaskRepository,
+            InventoryReservationTaskService taskService,
+            ProductionStateCoordinator stateCoordinator,
+            ProductionContractedServiceRepository contractedServiceRepository,
+            ProductionQuoteCommandListener quoteCommandListener) {
+        this(repository, eventPublisher, catalogClient, outboxEventRepository,
+                inventoryReservationTaskRepository, taskService, stateCoordinator,
+                contractedServiceRepository, quoteCommandListener, null, null);
+    }
+
+    public ProductionService(
+            ProductionRepository repository,
+            ApplicationEventPublisher eventPublisher,
+            CatalogClient catalogClient,
+            OutboxEventRepository outboxEventRepository,
+            InventoryReservationTaskRepository inventoryReservationTaskRepository,
+            InventoryReservationTaskService taskService,
+            ProductionStateCoordinator stateCoordinator,
+            ProductionContractedServiceRepository contractedServiceRepository,
+            ProductionQuoteCommandListener quoteCommandListener,
+            OrganizerContactService organizerContactService) {
+        this(repository, eventPublisher, catalogClient, outboxEventRepository,
+                inventoryReservationTaskRepository, taskService, stateCoordinator,
+                contractedServiceRepository, quoteCommandListener, organizerContactService, null);
     }
 
     @Autowired
@@ -77,7 +110,9 @@ public class ProductionService {
             InventoryReservationTaskService taskService,
             ProductionStateCoordinator stateCoordinator,
             @Autowired(required = false) ProductionContractedServiceRepository contractedServiceRepository,
-            @Autowired(required = false) ProductionQuoteCommandListener quoteCommandListener) {
+            @Autowired(required = false) ProductionQuoteCommandListener quoteCommandListener,
+            @Autowired(required = false) OrganizerContactService organizerContactService,
+            @Autowired(required = false) OrganizerDisplayNameResolver organizerDisplayNameResolver) {
         this.repository = repository;
         this.eventPublisher = eventPublisher;
         this.catalogClient = catalogClient;
@@ -87,13 +122,62 @@ public class ProductionService {
         this.stateCoordinator = stateCoordinator;
         this.contractedServiceRepository = contractedServiceRepository;
         this.quoteCommandListener = quoteCommandListener;
+        this.organizerContactService = organizerContactService;
+        this.organizerDisplayNameResolver = organizerDisplayNameResolver;
         this.objectMapper = new ObjectMapper()
                 .registerModule(new JavaTimeModule())
                 .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
     }
 
+    public record ContactProvisionRequest(
+            String organizerId,
+            String email,
+            String contactName,
+            String userOid
+    ) {}
+
     @Transactional
     public ProductionResponseDTO createProduction(ProductionRequestDTO request, String actor) {
+        return createProductionInternal(request, actor, null, null, null);
+    }
+
+    @Transactional
+    public ProductionResponseDTO createProduction(ProductionRequestDTO request, String actor, String actorDisplayName) {
+        return createProductionInternal(request, actor, actorDisplayName, null, null);
+    }
+
+    @Transactional
+    public ProductionResponseDTO createProduction(
+            ProductionRequestDTO request,
+            String actor,
+            org.springframework.security.oauth2.jwt.Jwt selfContactJwt) {
+        String actorDisplayName = cl.duoc.eventomax.productions.security.SecurityUtils.resolveDisplayName(selfContactJwt);
+        return createProductionInternal(request, actor, actorDisplayName, selfContactJwt, null);
+    }
+
+    @Transactional
+    public ProductionResponseDTO createProductionWithContact(
+            ProductionRequestDTO request,
+            String actor,
+            ContactProvisionRequest contactProvision) {
+        return createProductionInternal(request, actor, null, null, contactProvision);
+    }
+
+    @Transactional
+    public ProductionResponseDTO createProductionWithContact(
+            ProductionRequestDTO request,
+            String actor,
+            String actorDisplayName,
+            ContactProvisionRequest contactProvision) {
+        return createProductionInternal(request, actor, actorDisplayName, null, contactProvision);
+    }
+
+    private ProductionResponseDTO createProductionInternal(
+            ProductionRequestDTO request,
+            String actor,
+            String actorDisplayName,
+            org.springframework.security.oauth2.jwt.Jwt selfContactJwt,
+            ContactProvisionRequest contactProvision) {
 
         Production production = new Production();
 
@@ -114,6 +198,20 @@ public class ProductionService {
         }
 
         Production saved = repository.save(production);
+
+        if (organizerContactService != null) {
+            if (selfContactJwt != null) {
+                organizerContactService.ensureSelfContactFromJwt(selfContactJwt);
+            } else if (contactProvision != null) {
+                organizerContactService.ensureContactIfAbsent(
+                        contactProvision.organizerId(),
+                        contactProvision.email(),
+                        contactProvision.contactName(),
+                        contactProvision.userOid(),
+                        actor
+                );
+            }
+        }
 
         try {
             Instant now = Instant.now();
@@ -138,6 +236,8 @@ public class ProductionService {
                             trace.traceId(),
                             trace.correlationId(),
                             actor,
+                            actorDisplayName,
+                            "ms-eventomax-productions",
                             payload
                     );
 
@@ -195,18 +295,12 @@ public class ProductionService {
 
     @Transactional(readOnly = true)
     public List<ProductionResponseDTO> getAllProductions() {
-        return repository.findAll()
-                .stream()
-                .map(this::toResponseDTO)
-                .toList();
+        return toResponseDTOs(repository.findAll());
     }
 
     @Transactional(readOnly = true)
     public List<ProductionResponseDTO> getAllProductionsForOwner(String ownerId) {
-        return repository.findByOrganizerId(ownerId)
-                .stream()
-                .map(this::toResponseDTO)
-                .toList();
+        return toResponseDTOs(repository.findByOrganizerId(ownerId));
     }
 
     @Transactional(readOnly = true)
@@ -232,10 +326,7 @@ public class ProductionService {
             }
         }
 
-        return repository.findByFilters(status, from, to, ownerId)
-                .stream()
-                .map(this::toResponseDTO)
-                .toList();
+        return toResponseDTOs(repository.findByFilters(status, from, to, ownerId));
     }
 
     @Transactional(readOnly = true)
@@ -243,10 +334,7 @@ public class ProductionService {
         if (organizerIds == null || organizerIds.isEmpty()) {
             return List.of();
         }
-        return repository.findByOrganizerIdIn(organizerIds)
-                .stream()
-                .map(this::toResponseDTO)
-                .toList();
+        return toResponseDTOs(repository.findByOrganizerIdIn(organizerIds));
     }
 
     @Transactional(readOnly = true)
@@ -266,23 +354,24 @@ public class ProductionService {
             }
         }
 
-        return repository.findByFilters(status, from, to, organizerIds)
-                .stream()
-                .map(this::toResponseDTO)
-                .toList();
+        return toResponseDTOs(repository.findByFilters(status, from, to, organizerIds));
     }
 
     public ProductionResponseDTO updateStatus(Long id, ProductionStatusUpdateDTO request, String actor) {
+        return updateStatus(id, request, actor, null);
+    }
+
+    public ProductionResponseDTO updateStatus(Long id, ProductionStatusUpdateDTO request, String actor, String actorDisplayName) {
         if (request.status() == ProductionStatus.CONFIRMADO) {
-            return handleConfirmation(id, request, actor);
+            return handleConfirmation(id, request, actor, actorDisplayName);
         } else if (request.status() == ProductionStatus.CANCELADO) {
-            return handleCancellation(id, actor);
+            return handleCancellation(id, actor, actorDisplayName);
         } else {
-            return executeStandardStatusUpdate(id, request.status(), request.crewId(), request.crewName(), actor);
+            return executeStandardStatusUpdate(id, request.status(), request.crewId(), request.crewName(), actor, actorDisplayName);
         }
     }
 
-    private ProductionResponseDTO handleConfirmation(Long id, ProductionStatusUpdateDTO request, String actor) {
+    private ProductionResponseDTO handleConfirmation(Long id, ProductionStatusUpdateDTO request, String actor, String actorDisplayName) {
         if (request.items() == null || request.items().isEmpty()) {
             stateCoordinator.validateCanConfirm(id);
             throw new IllegalArgumentException("Se requieren ítems de inventario para confirmar una producción");
@@ -376,7 +465,7 @@ public class ProductionService {
                 boolean hasActive = reservations != null && reservations.stream()
                         .anyMatch(r -> "RESERVED".equalsIgnoreCase(r.status()));
                 if (hasActive) {
-                    return completeConfirmationWithCompensationOnFailure(id, actor, generation, contractedServices);
+                    return completeConfirmationWithCompensationOnFailure(id, actor, actorDisplayName, generation, contractedServices);
                 } else {
                     taskService.markFailed(id, generation, e.getMessage());
                     throw e;
@@ -398,13 +487,20 @@ public class ProductionService {
         }
 
         // 3. Completar confirmación local en una nueva transacción vía stateCoordinator
-        return completeConfirmationWithCompensationOnFailure(id, actor, generation, contractedServices);
+        return completeConfirmationWithCompensationOnFailure(id, actor, actorDisplayName, generation, contractedServices);
     }
 
     private ProductionResponseDTO completeConfirmationWithCompensationOnFailure(
             Long id, String actor, Long generation, List<cl.duoc.eventomax.productions.dto.ContractedServiceDto> contractedServices) {
+        return completeConfirmationWithCompensationOnFailure(id, actor, null, generation, contractedServices);
+    }
+
+    private ProductionResponseDTO completeConfirmationWithCompensationOnFailure(
+            Long id, String actor, String actorDisplayName, Long generation, List<cl.duoc.eventomax.productions.dto.ContractedServiceDto> contractedServices) {
         try {
-            Production saved = stateCoordinator.completeConfirmation(id, actor, generation, contractedServices);
+            Production saved = (actorDisplayName != null)
+                    ? stateCoordinator.completeConfirmation(id, actor, actorDisplayName, generation, contractedServices)
+                    : stateCoordinator.completeConfirmation(id, actor, generation, contractedServices);
             return toResponseDTO(saved);
         } catch (Exception e) {
             boolean canCompensate = stateCoordinator.tryBeginCompensation(
@@ -446,9 +542,11 @@ public class ProductionService {
         return completeConfirmationWithCompensationOnFailure(id, actor, null);
     }
 
-    private ProductionResponseDTO handleCancellation(Long id, String actor) {
+    private ProductionResponseDTO handleCancellation(Long id, String actor, String actorDisplayName) {
         // 1. Commit atómico local en REQUIRES_NEW vía stateCoordinator
-        Production saved = stateCoordinator.executeLocalCancellation(id, actor);
+        Production saved = (actorDisplayName != null)
+                ? stateCoordinator.executeLocalCancellation(id, actor, actorDisplayName)
+                : stateCoordinator.executeLocalCancellation(id, actor);
 
         // 2. Compensación externa en Catalog post-commit con reintento seguro
         Optional<cl.duoc.eventomax.productions.model.InventoryReservationTask> taskOpt = taskService.getTaskByProductionId(id);
@@ -476,11 +574,50 @@ public class ProductionService {
         return toResponseDTO(saved);
     }
 
+    public ProductionResponseDTO executeStandardStatusUpdate(
+            Long id, ProductionStatus nextStatus, String crewId, String crewName, String actor, String actorDisplayName) {
+        Production saved = (actorDisplayName != null)
+                ? stateCoordinator.executeStandardStatusUpdate(id, nextStatus, crewId, crewName, actor, actorDisplayName)
+                : stateCoordinator.executeStandardStatusUpdate(id, nextStatus, crewId, crewName, actor);
+        return toResponseDTO(saved);
+    }
+
     // -------------------------------------------------------------------------
     // Mapper
     // -------------------------------------------------------------------------
 
+    private List<ProductionResponseDTO> toResponseDTOs(List<Production> productions) {
+        if (productions == null || productions.isEmpty()) {
+            return List.of();
+        }
+        if (organizerDisplayNameResolver == null) {
+            return productions.stream().map(p -> mapToResponseDTO(p, null)).toList();
+        }
+        List<String> organizerIds = productions.stream()
+                .map(Production::getOrganizerId)
+                .toList();
+        java.util.Map<String, OrganizerDisplayNameResolver.ResolvedOrganizer> resolvedMap =
+                organizerDisplayNameResolver.resolveAll(organizerIds);
+        return productions.stream()
+                .map(p -> {
+                    String key = p.getOrganizerId() != null ? p.getOrganizerId().trim() : "";
+                    OrganizerDisplayNameResolver.ResolvedOrganizer resolved =
+                            resolvedMap.getOrDefault(key, OrganizerDisplayNameResolver.ResolvedOrganizer.UNRESOLVED);
+                    return mapToResponseDTO(p, resolved);
+                })
+                .toList();
+    }
+
     private ProductionResponseDTO toResponseDTO(Production production) {
+        OrganizerDisplayNameResolver.ResolvedOrganizer resolved = (organizerDisplayNameResolver != null)
+                ? organizerDisplayNameResolver.resolveOne(production.getOrganizerId())
+                : null;
+        return mapToResponseDTO(production, resolved);
+    }
+
+    private ProductionResponseDTO mapToResponseDTO(
+            Production production,
+            OrganizerDisplayNameResolver.ResolvedOrganizer resolved) {
         return new ProductionResponseDTO(
                 production.getId(),
                 production.getOrganizerId(),
@@ -491,7 +628,9 @@ public class ProductionService {
                 production.getCreatedAt(),
                 production.getUpdatedAt(),
                 production.getCrewId(),
-                production.getCrewName()
+                production.getCrewName(),
+                resolved != null ? resolved.displayName() : null,
+                resolved != null ? resolved.source() : null
         );
     }
 }

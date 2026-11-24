@@ -13,6 +13,8 @@ import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.LocalDateTime;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -48,26 +50,55 @@ public class OrganizerContactService {
         validateOrganizerOwnership(organizerId, authentication, jwt);
 
         String actor = (jwt != null) ? SecurityUtils.resolveOwnerId(jwt) : "system";
+        boolean hasAdmin = authentication != null && authentication.getAuthorities() != null
+                && authentication.getAuthorities().stream()
+                .anyMatch(a -> "ROLE_Admin".equals(a.getAuthority()));
+        boolean hasProducer = authentication != null && authentication.getAuthorities() != null
+                && authentication.getAuthorities().stream()
+                .anyMatch(a -> "ROLE_Productor".equals(a.getAuthority()));
         boolean isOrganizerSelf = (jwt != null) && SecurityUtils.isOrganizerOnly(authentication, jwt);
+        boolean isProducerSelfOnly = !hasAdmin && !isOrganizerSelf && hasProducer;
 
-        // Si se provee userOid explícito (ej. asignado administrativamente), se utiliza ese valor.
-        // Si quien llama es el propio organizador, se toma su propio OID del token.
-        // Si quien llama es Admin o Productor y NO se especifica userOid, NO se asigna el OID del administrador.
+        String effectiveOrganizerId = (organizerId != null) ? organizerId.trim() : "";
         String targetOid = null;
-        if (request.userOid() != null && !request.userOid().isBlank()) {
+        if (isOrganizerSelf) {
+            String callerOid = SecurityUtils.requireOrganizerOid(jwt);
+            if (request.userOid() != null && !request.userOid().isBlank()
+                    && !callerOid.equalsIgnoreCase(request.userOid().trim())) {
+                throw new AccessDeniedException("Organizador no puede reasignar el vinculo de propiedad");
+            }
+            // Existing links are preserved; new self contacts use the authenticated OID.
+            targetOid = callerOid;
+        } else if (isProducerSelfOnly) {
+            String callerOwnerId = SecurityUtils.requireOrganizerOwnerId(jwt);
+            String callerOid = SecurityUtils.requireOrganizerOid(jwt);
+            if (!callerOwnerId.equalsIgnoreCase(effectiveOrganizerId)) {
+                log.warn("Productor sin rol Admin intentó modificar un contacto ajeno");
+                throw new AccessDeniedException("Productor solo puede registrar o actualizar su propio contacto canónico");
+            }
+            if (request.userOid() != null && !request.userOid().isBlank()
+                    && !callerOid.equalsIgnoreCase(request.userOid().trim())) {
+                throw new AccessDeniedException("Productor no puede asignar o modificar el vinculo de propiedad de terceros");
+            }
+            effectiveOrganizerId = callerOwnerId;
+            targetOid = callerOid;
+        } else if (request.userOid() != null && !request.userOid().isBlank()) {
+            if (!hasAdmin) {
+                throw new AccessDeniedException("Solo Admin puede asignar el vinculo de propiedad");
+            }
             targetOid = request.userOid().trim();
-        } else if (isOrganizerSelf) {
-            targetOid = SecurityUtils.resolveOid(jwt);
         }
 
         final String finalOid = targetOid;
+        final String finalOrganizerId = effectiveOrganizerId;
+        final boolean preserveExistingOid = isOrganizerSelf || isProducerSelfOnly;
 
-        OrganizerContact contact = contactRepository.findByOrganizerId(organizerId)
+        OrganizerContact contact = contactRepository.findByOrganizerId(finalOrganizerId)
                 .map(existing -> {
                     existing.setEmail(request.email().trim());
                     existing.setContactName(request.contactName() != null ? request.contactName().trim() : null);
                     existing.setPhone(request.phone() != null ? request.phone().trim() : null);
-                    if (finalOid != null && !finalOid.isBlank()) {
+                    if (!preserveExistingOid && finalOid != null && !finalOid.isBlank()) {
                         existing.setUserOid(finalOid);
                     }
                     existing.setActive(true);
@@ -75,7 +106,7 @@ public class OrganizerContactService {
                     return existing;
                 })
                 .orElseGet(() -> new OrganizerContact(
-                        organizerId.trim(),
+                        finalOrganizerId,
                         request.email().trim(),
                         request.contactName() != null ? request.contactName().trim() : null,
                         request.phone() != null ? request.phone().trim() : null,
@@ -84,10 +115,66 @@ public class OrganizerContactService {
                 ));
 
         OrganizerContact saved = contactRepository.save(contact);
-        log.info("Contacto de organizador actualizado exitosamente: organizerId={}, email={}, userOid={}, actor={}",
-                organizerId, saved.getEmail(), saved.getUserOid(), actor);
+        log.info("Contacto de organizador actualizado exitosamente");
 
         return OrganizerContactResponseDTO.fromEntity(saved);
+    }
+
+    /**
+     * Aprovisiona de forma idempotente el contacto propio del usuario autenticado (tid:oid)
+     * utilizando exclusivamente claims validados del JWT.
+     * - Si ya existe contacto para organizer_id, NO sobrescribe email ni user_oid (ON CONFLICT DO NOTHING).
+     * - Si el JWT no contiene un correo sintácticamente entregable, no inserta fila y deja constancia en log.
+     * - Participa en la transacción del llamador para garantizar atomicidad y evitar contactos huérfanos.
+     */
+    @Transactional
+    public boolean ensureSelfContactFromJwt(Jwt jwt) {
+        if (jwt == null) {
+            return false;
+        }
+        String ownerId = SecurityUtils.requireOrganizerOwnerId(jwt);
+        String oid = SecurityUtils.requireOrganizerOid(jwt);
+        String email = SecurityUtils.resolveDeliverableEmail(jwt);
+        if (email == null) {
+            log.warn("[SELF_CONTACT_SKIPPED] El token para '{}' no entrega un correo entregable apto (ausente, inválido o #EXT#). "
+                            + "La producción se creará igualmente, pero las notificaciones no podrán entregarse hasta registrar un contacto autorizado.",
+                    ownerId);
+            return false;
+        }
+        String contactName = SecurityUtils.resolveDisplayName(jwt);
+        LocalDateTime now = LocalDateTime.now().truncatedTo(ChronoUnit.MICROS);
+        int inserted = contactRepository.insertIfAbsent(ownerId, email, contactName, oid, now, ownerId);
+        if (inserted > 0) {
+            log.info("[SELF_CONTACT_PROVISIONED] Contacto propio aprovisionado automáticamente para '{}'", ownerId);
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * Aprovisiona de forma idempotente un contacto (para Organizador Entra verificado o nuevo cliente externo)
+     * dentro de la transacción activa. Nunca sobrescribe un contacto previamente registrado.
+     */
+    @Transactional
+    public boolean ensureContactIfAbsent(String organizerId, String email, String contactName, String userOid, String actor) {
+        if (organizerId == null || organizerId.isBlank() || !SecurityUtils.isDeliverableEmail(email)) {
+            return false;
+        }
+        String cleanOrgId = organizerId.trim();
+        String cleanEmail = email.trim();
+        String cleanName = (contactName != null && !contactName.isBlank()) ? contactName.trim() : null;
+        if (cleanName != null && cleanName.length() > 150) {
+            cleanName = cleanName.substring(0, 150);
+        }
+        String cleanOid = (userOid != null && !userOid.isBlank()) ? userOid.trim().toLowerCase(java.util.Locale.ROOT) : null;
+        String cleanActor = (actor != null && !actor.isBlank()) ? actor.trim() : "system";
+        LocalDateTime now = LocalDateTime.now().truncatedTo(ChronoUnit.MICROS);
+        int inserted = contactRepository.insertIfAbsent(cleanOrgId, cleanEmail, cleanName, cleanOid, now, cleanActor);
+        if (inserted > 0) {
+            log.info("[CONTACT_PROVISIONED] Contacto registrado idempotentemente para '{}'", cleanOrgId);
+            return true;
+        }
+        return false;
     }
 
     @Transactional(readOnly = true)
@@ -116,21 +203,20 @@ public class OrganizerContactService {
             return false;
         }
         String cleanOrgId = organizerId.trim();
-        String callerOwnerId = SecurityUtils.resolveOwnerId(jwt);
+        String callerOwnerId = SecurityUtils.requireOrganizerOwnerId(jwt);
         if (callerOwnerId.equalsIgnoreCase(cleanOrgId)) {
             return true;
+        }
+        if (SecurityUtils.isCanonicalOwnerId(cleanOrgId)) {
+            return false;
         }
         Optional<OrganizerContact> contactOpt = contactRepository.findByOrganizerIdAndActiveTrue(cleanOrgId);
         if (contactOpt.isEmpty()) {
             return false;
         }
         OrganizerContact contact = contactOpt.get();
-        String oid = SecurityUtils.resolveOid(jwt);
+        String oid = SecurityUtils.requireOrganizerOid(jwt);
         if (oid != null && !oid.isBlank() && oid.equalsIgnoreCase(contact.getUserOid())) {
-            return true;
-        }
-        String email = SecurityUtils.resolveEmail(jwt);
-        if (email != null && !email.isBlank() && email.equalsIgnoreCase(contact.getEmail())) {
             return true;
         }
         return false;
@@ -141,17 +227,14 @@ public class OrganizerContactService {
         if (jwt == null) {
             return List.of();
         }
-        String ownerId = SecurityUtils.resolveOwnerId(jwt);
-        String oid = SecurityUtils.resolveOid(jwt);
-        String email = SecurityUtils.resolveEmail(jwt);
+        String ownerId = SecurityUtils.requireOrganizerOwnerId(jwt);
+        String oid = SecurityUtils.requireOrganizerOid(jwt);
 
         LinkedHashSet<String> combined = new LinkedHashSet<>();
         if (oid != null && !oid.isBlank()) {
             contactRepository.findByActiveTrueAndUserOid(oid.trim())
-                    .forEach(c -> combined.add(c.getOrganizerId()));
-        }
-        if (email != null && !email.isBlank()) {
-            contactRepository.findByActiveTrueAndEmailIgnoreCase(email.trim())
+                    .stream().filter(c -> !SecurityUtils.isCanonicalOwnerId(c.getOrganizerId())
+                            || ownerId.equalsIgnoreCase(c.getOrganizerId()))
                     .forEach(c -> combined.add(c.getOrganizerId()));
         }
         if (ownerId != null && !ownerId.isBlank()) {
@@ -163,9 +246,7 @@ public class OrganizerContactService {
     public void validateOrganizerOwnership(String organizerId, Authentication authentication, Jwt jwt) {
         if (SecurityUtils.isOrganizerOnly(authentication, jwt)) {
             if (!isAuthorizedForOrganizer(organizerId, authentication, jwt)) {
-                String callerOwnerId = (jwt != null) ? SecurityUtils.resolveOwnerId(jwt) : "unknown";
-                log.warn("Intento de acceso denegado a organizador ajeno: caller={}, targetOrganizer={}",
-                        callerOwnerId, organizerId);
+                log.warn("Intento de acceso denegado a organizador ajeno");
                 throw new AccessDeniedException("No está autorizado a consultar o administrar información de este organizador");
             }
         }

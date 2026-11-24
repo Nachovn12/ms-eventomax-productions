@@ -1,5 +1,7 @@
 package cl.duoc.eventomax.productions.controller;
 
+import cl.duoc.eventomax.productions.service.ContactConflictException;
+import cl.duoc.eventomax.productions.service.ExternalDirectoryUnavailableException;
 import cl.duoc.eventomax.productions.service.InvalidTransitionException;
 import cl.duoc.eventomax.productions.service.ResourceNotFoundException;
 
@@ -77,6 +79,38 @@ public class GlobalExceptionHandler {
                 .status(HttpStatus.CONFLICT)
                 .body(response);
 
+    }
+
+    @ExceptionHandler(ContactConflictException.class)
+    public ResponseEntity<Map<String, Object>> handleContactConflict(
+            ContactConflictException ex) {
+
+        Map<String, Object> response = Map.of(
+                "timestamp", LocalDateTime.now(),
+                "status", 409,
+                "error", "Conflict",
+                "message", ex.getMessage()
+        );
+
+        return ResponseEntity
+                .status(HttpStatus.CONFLICT)
+                .body(response);
+    }
+
+    @ExceptionHandler(ExternalDirectoryUnavailableException.class)
+    public ResponseEntity<Map<String, Object>> handleExternalDirectoryUnavailable(
+            ExternalDirectoryUnavailableException ex) {
+
+        Map<String, Object> response = Map.of(
+                "timestamp", LocalDateTime.now(),
+                "status", 503,
+                "error", "Service Unavailable",
+                "message", ex.getMessage()
+        );
+
+        return ResponseEntity
+                .status(HttpStatus.SERVICE_UNAVAILABLE)
+                .body(response);
     }
 
     @ExceptionHandler(IllegalArgumentException.class)

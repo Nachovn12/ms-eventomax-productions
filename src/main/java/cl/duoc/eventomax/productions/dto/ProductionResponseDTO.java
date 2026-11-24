@@ -34,10 +34,22 @@ public record ProductionResponseDTO(
         String crewId,
 
         @Schema(description = "Nombre de la cuadrilla asignada", example = "Cuadrilla Técnica Alpha")
-        String crewName
+        String crewName,
+
+        @Schema(description = "Nombre real resuelto del organizador o cliente asociado", example = "Ignacio Valeria")
+        String organizerDisplayName,
+
+        @Schema(description = "Fuente de resolución del nombre del organizador (ENTRA_GRAPH, EXTERNAL_CONTACT, UNRESOLVED)")
+        OrganizerResolutionSource organizerResolutionSource
 ) {
     public ProductionResponseDTO(Long id, String organizerId, String name, LocalDateTime scheduledAt,
                                  String location, String status, LocalDateTime createdAt, LocalDateTime updatedAt) {
-        this(id, organizerId, name, scheduledAt, location, status, createdAt, updatedAt, null, null);
+        this(id, organizerId, name, scheduledAt, location, status, createdAt, updatedAt, null, null, null, null);
+    }
+
+    public ProductionResponseDTO(Long id, String organizerId, String name, LocalDateTime scheduledAt,
+                                 String location, String status, LocalDateTime createdAt, LocalDateTime updatedAt,
+                                 String crewId, String crewName) {
+        this(id, organizerId, name, scheduledAt, location, status, createdAt, updatedAt, crewId, crewName, null, null);
     }
 }
